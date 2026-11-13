@@ -1,0 +1,37 @@
+{
+  "expo": {
+    "name": "SmartCard BUS",
+    "slug": "voupass-bilhete-digital",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "jsEngine": "hermes",
+    "splash": {
+      "backgroundColor": "#003ec8"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "jsEngine": "hermes"
+    },
+    "android": {
+      "package": "com.voupass.smartcardbus",
+      "jsEngine": "hermes",
+      "adaptiveIcon": {
+        "backgroundColor": "#003ec8",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "@react-native-community/datetimepicker",
+      "expo-secure-store",
+      "expo-image"
+    ]
+  }
+}

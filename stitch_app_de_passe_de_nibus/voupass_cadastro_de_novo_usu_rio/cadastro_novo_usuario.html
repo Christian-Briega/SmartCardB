@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="pt-BR" style="width: 390px; height: 1962px; overflow: hidden; position: relative;">
+
+<head>
+  <meta charset="utf-8">
+  <meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    name="viewport">
+  <link href="https://fonts.googleapis.com" rel="preconnect">
+  <link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&amp;display=swap"
+    rel="stylesheet">
+  <link
+    href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200"
+    rel="stylesheet">
+  <link
+    href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap"
+    rel="stylesheet">
+  <style>
+    @layer base {
+
+      html,
+      body {
+        width: 100vw;
+        margin: 0;
+        padding: 0;
+      }
+
+      body {
+        overscroll-behavior: none;
+      }
+
+      .pb-safe {
+        padding-bottom: env(safe-area-inset-bottom, 0px);
+      }
+
+      .pt-safe {
+        padding-top: env(safe-area-inset-top, 0px);
+      }
+
+      main>:first-child {
+        margin-top: 0 !important;
+      }
+
+      main>:last-child {
+        margin-bottom: 0 !important;
+      }
+    }
+
+    ::-webkit-scrollbar {
+      display: none;
+    }
+  </style>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script
+    id="tailwind-config">tailwind.config = { darkMode: "class", theme: { extend: { "colors": { "outline-variant": "#c3c5d9", "outline": "#737688", "inverse-on-surface": "#eef0ff", "inverse-surface": "#283044", "on-tertiary": "#ffffff", "secondary-fixed-dim": "#68dba9", "on-tertiary-container": "#ffdfbe", "tertiary-container": "#905a00", "primary-fixed": "#dde1ff", "primary-fixed-dim": "#b7c4ff", "on-primary-fixed-variant": "#0038b7", "on-error": "#ffffff", "secondary-container": "#82f5c1", "surface-bright": "#faf8ff", "on-secondary": "#ffffff", "on-secondary-container": "#00714e", "on-tertiary-fixed": "#2a1700", "tertiary-fixed": "#ffddb8", "surface": "#faf8ff", "surface-container-highest": "#dae2fd", "tertiary-fixed-dim": "#ffb95f", "tertiary": "#6f4500", "surface-tint": "#004bee", "surface-variant": "#dae2fd", "primary": "#003ec8", "on-primary-container": "#e0e3ff", "on-secondary-fixed": "#002114", "surface-container-high": "#e2e7ff", "on-primary-fixed": "#001452", "on-surface-variant": "#434656", "surface-dim": "#d2d9f4", "secondary": "#006c4a", "error": "#ba1a1a", "secondary-fixed": "#85f8c4", "surface-container-lowest": "#ffffff", "on-surface": "#131b2e", "on-background": "#131b2e", "on-primary": "#ffffff", "on-secondary-fixed-variant": "#005137", "surface-container": "#eaedff", "on-error-container": "#93000a", "inverse-primary": "#b7c4ff", "surface-container-low": "#f2f3ff", "background": "#faf8ff", "error-container": "#ffdad6", "primary-container": "#0d53fc", "on-tertiary-fixed-variant": "#653e00" }, "borderRadius": { "DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px" }, "spacing": { "margin-tablet": "2rem", "space-sm": "0.5rem", "space-xl": "2rem", "space-lg": "1.5rem", "gutter": "1rem", "space-md": "1rem", "margin": "1rem", "space-xs": "0.25rem", "margin-desktop": "3rem", "gutter-desktop": "2rem", "gutter-tablet": "1.5rem" }, "fontFamily": { "label-sm": ["Plus Jakarta Sans"], "headline-lg-mobile": ["Plus Jakarta Sans"], "headline-md": ["Plus Jakarta Sans"], "title-md": ["Plus Jakarta Sans"], "display": ["Plus Jakarta Sans"], "label-md": ["Plus Jakarta Sans"], "headline-sm": ["Plus Jakarta Sans"], "body-md": ["Plus Jakarta Sans"], "body-sm": ["Plus Jakarta Sans"], "headline-lg": ["Plus Jakarta Sans"], "body-lg": ["Plus Jakarta Sans"], "label-lg": ["Plus Jakarta Sans"] }, "fontSize": { "label-sm": ["10px", { "lineHeight": "14px", "letterSpacing": "0.06em", "fontWeight": "700" }], "headline-lg-mobile": ["26px", { "lineHeight": "34px", "letterSpacing": "-0.02em", "fontWeight": "700" }], "headline-md": ["24px", { "lineHeight": "32px", "letterSpacing": "-0.015em", "fontWeight": "700" }], "title-md": ["18px", { "lineHeight": "24px", "letterSpacing": "-0.01em", "fontWeight": "600" }], "display": ["40px", { "lineHeight": "48px", "letterSpacing": "-0.03em", "fontWeight": "800" }], "label-md": ["12px", { "lineHeight": "16px", "letterSpacing": "0.04em", "fontWeight": "700" }], "headline-sm": ["20px", { "lineHeight": "28px", "letterSpacing": "-0.01em", "fontWeight": "600" }], "body-md": ["14px", { "lineHeight": "20px", "letterSpacing": "0em", "fontWeight": "400" }], "body-sm": ["12px", { "lineHeight": "16px", "letterSpacing": "0.01em", "fontWeight": "400" }], "headline-lg": ["32px", { "lineHeight": "40px", "letterSpacing": "-0.02em", "fontWeight": "700" }], "body-lg": ["16px", { "lineHeight": "24px", "letterSpacing": "0em", "fontWeight": "500" }], "label-lg": ["14px", { "lineHeight": "20px", "letterSpacing": "0.02em", "fontWeight": "700" }] } } } }</script>
+</head>
+
+<body class="bg-surface font-body-md text-body-md text-on-surface flex flex-col min-h-screen">
+  <main class="flex flex-col relative w-full pt-safe pb-safe bg-surface flex-grow">
+    <div class="flex flex-col w-full px-margin pb-space-xl">
+      <!-- Top Navigation Bar -->
+      <div class="flex items-center justify-between py-space-sm">
+        <button aria-label="Voltar para login"
+          class="w-10 h-10 rounded-full bg-surface-container flex items-center justify-center text-on-surface active:scale-95 transition-transform"
+          type="button">
+          <span class="material-symbols-outlined text-[20px]">arrow_back</span>
+        </button>
+        <div class="flex items-center gap-space-xs">
+          <div
+            class="w-7 h-7 rounded-lg bg-primary-container flex items-center justify-center text-on-primary shadow-sm">
+            <span class="material-symbols-outlined text-[18px]">directions_bus</span>
+          </div>
+          <span class="font-title-md text-title-md text-on-surface">SmartCard BUS</span>
+        </div>
+        <a class="font-label-md text-label-md text-primary font-semibold hover:underline" href="#">Entrar</a>
+      </div>
+      <!-- Step Progress Indicator -->
+      <div class="mt-space-sm mb-space-md">
+        <div class="flex items-center justify-between text-body-sm font-body-sm text-on-surface-variant mb-space-xs">
+          <span class="font-medium text-primary">Etapa 1 de 2</span>
+          <span>Dados Pessoais &amp; Documentos</span>
+        </div>
+        <div class="w-full h-1.5 bg-surface-container-high rounded-full overflow-hidden flex">
+          <div class="h-full bg-primary-container rounded-full transition-all duration-300 w-1/2"></div>
+          <div class="h-full bg-transparent w-1/2"></div>
+        </div>
+      </div>
+      <!-- Hero Header & Value Proposition -->
+      <div
+        class="bg-gradient-to-br from-surface-container to-surface-container-high rounded-2xl p-space-md shadow-sm mb-space-lg relative overflow-hidden">
+        <div class="flex items-start justify-between">
+          <div
+            class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-secondary-container text-on-secondary-container font-label-sm text-label-sm mb-space-xs">
+            <span class="material-symbols-outlined text-[14px]">verified</span>
+            <span>Emissão 100% gratuita</span>
+          </div>
+          <span
+            class="material-symbols-outlined text-primary/10 text-6xl absolute -right-2 -bottom-2 select-none">badge</span>
+        </div>
+        <h1 class="font-headline-lg-mobile text-headline-lg-mobile text-on-surface tracking-tight mt-1">
+          Seu bilhete digital em minutos 🚌
+        </h1>
+        <p class="font-body-sm text-body-sm text-on-surface-variant mt-1.5 max-w-[90%]">
+          Cadastre-se para emitir seu primeiro passe digital, recarregar sem filas e embarcar direto com a catraca do
+          seu celular.
+        </p>
+        <!-- Micro benefits ticker -->
+        <div class="flex items-center gap-3 mt-space-sm pt-space-xs">
+          <div class="flex items-center gap-1 text-on-surface font-label-sm text-label-sm">
+            <span class="material-symbols-outlined text-secondary text-[16px]">bolt</span>
+            <span>Aprovação instantânea</span>
+          </div>
+          <span class="text-outline-variant">•</span>
+          <div class="flex items-center gap-1 text-on-surface font-label-sm text-label-sm">
+            <span class="material-symbols-outlined text-secondary text-[16px]">contactless</span>
+            <span>NFC &amp; QR Code</span>
+          </div>
+        </div>
+      </div>
+      <!-- Registration Form -->
+      <form class="flex flex-col gap-space-md" id="signup-form" onsubmit="event.preventDefault();">
+        <!-- Section: Identity Info -->
+        <div class="bg-surface-container-lowest rounded-2xl p-space-md shadow-sm flex flex-col gap-space-md">
+          <div class="flex items-center gap-2">
+            <span class="material-symbols-outlined text-primary text-[20px]">person_outline</span>
+            <h2 class="font-title-md text-title-md text-on-surface">Dados do Titular</h2>
+          </div>
+          <!-- Nome Completo -->
+          <div class="flex flex-col gap-1.5">
+            <label class="font-label-md text-label-md text-on-surface font-semibold" for="full-name">
+              Nome Completo <span class="text-error">*</span>
+            </label>
+            <div
+              class="relative flex items-center bg-surface-container-low rounded-xl focus-within:bg-surface-container-lowest focus-within:shadow-md transition-all">
+              <span class="material-symbols-outlined absolute left-3.5 text-on-surface-variant text-[20px]">badge</span>
+              <input
+                class="w-full bg-transparent py-3.5 pl-11 pr-4 font-body-md text-body-md text-on-surface placeholder:text-outline focus:outline-none"
+                id="full-name" placeholder="Ex: Mariana Silva Rocha" required="" type="text">
+            </div>
+          </div>
+          <!-- CPF with Helper Tag -->
+          <div class="flex flex-col gap-1.5">
+            <div class="flex items-center justify-between">
+              <label class="font-label-md text-label-md text-on-surface font-semibold" for="cpf">
+                CPF <span class="text-error">*</span>
+              </label>
+              <span class="font-label-sm text-label-sm text-on-surface-variant flex items-center gap-0.5">
+                <span class="material-symbols-outlined text-[13px] text-secondary">lock</span> Protegido
+              </span>
+            </div>
+            <div
+              class="relative flex items-center bg-surface-container-low rounded-xl focus-within:bg-surface-container-lowest focus-within:shadow-md transition-all">
+              <span
+                class="material-symbols-outlined absolute left-3.5 text-on-surface-variant text-[20px]">fingerprint</span>
+              <input
+                class="w-full bg-transparent py-3.5 pl-11 pr-4 font-body-md text-body-md text-on-surface placeholder:text-outline focus:outline-none"
+                id="cpf" maxlength="14" placeholder="000.000.000-00" required="" type="tel">
+            </div>
+            <div
+              class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-surface-container-high text-on-surface-variant font-body-sm text-body-sm">
+              <span class="material-symbols-outlined text-[16px] text-primary">info</span>
+              <span>Necessário para emissão do Bilhete Único &amp; SPTrans</span>
+            </div>
+          </div>
+          <!-- Data de Nascimento -->
+          <div class="flex flex-col gap-1.5">
+            <label class="font-label-md text-label-md text-on-surface font-semibold" for="birth-date">
+              Data de Nascimento <span class="text-error">*</span>
+            </label>
+            <div
+              class="relative flex items-center bg-surface-container-low rounded-xl focus-within:bg-surface-container-lowest focus-within:shadow-md transition-all">
+              <span
+                class="material-symbols-outlined absolute left-3.5 text-on-surface-variant text-[20px]">calendar_today</span>
+              <input
+                class="w-full bg-transparent py-3.5 pl-11 pr-4 font-body-md text-body-md text-on-surface placeholder:text-outline focus:outline-none"
+                id="birth-date" maxlength="10" placeholder="DD/MM/AAAA" required="" type="text">
+            </div>
+          </div>
+        </div>
+        <!-- Section: Contact & Access -->
+        <div class="bg-surface-container-lowest rounded-2xl p-space-md shadow-sm flex flex-col gap-space-md">
+          <div class="flex items-center gap-2">
+            <span class="material-symbols-outlined text-primary text-[20px]">lock_clock</span>
+            <h2 class="font-title-md text-title-md text-on-surface">Contato &amp; Senha de Acesso</h2>
+          </div>
+          <!-- E-mail -->
+          <div class="flex flex-col gap-1.5">
+            <label class="font-label-md text-label-md text-on-surface font-semibold" for="email">
+              E-mail <span class="text-error">*</span>
+            </label>
+            <div
+              class="relative flex items-center bg-surface-container-low rounded-xl focus-within:bg-surface-container-lowest focus-within:shadow-md transition-all">
+              <span class="material-symbols-outlined absolute left-3.5 text-on-surface-variant text-[20px]">mail</span>
+              <input
+                class="w-full bg-transparent py-3.5 pl-11 pr-4 font-body-md text-body-md text-on-surface placeholder:text-outline focus:outline-none"
+                id="email" placeholder="seu.email@exemplo.com" required="" type="email">
+            </div>
+          </div>
+          <!-- Celular / WhatsApp -->
+          <div class="flex flex-col gap-1.5">
+            <div class="flex items-center justify-between">
+              <label class="font-label-md text-label-md text-on-surface font-semibold" for="phone">
+                Celular / WhatsApp <span class="text-error">*</span>
+              </label>
+              <span
+                class="px-2 py-0.5 rounded-full bg-surface-container-high text-on-surface-variant font-label-sm text-label-sm">Validação
+                SMS</span>
+            </div>
+            <div
+              class="relative flex items-center bg-surface-container-low rounded-xl focus-within:bg-surface-container-lowest focus-within:shadow-md transition-all">
+              <span
+                class="material-symbols-outlined absolute left-3.5 text-on-surface-variant text-[20px]">smartphone</span>
+              <input
+                class="w-full bg-transparent py-3.5 pl-11 pr-4 font-body-md text-body-md text-on-surface placeholder:text-outline focus:outline-none"
+                id="phone" maxlength="15" placeholder="(11) 98765-4321" required="" type="tel">
+            </div>
+          </div>
+          <!-- Senha de Acesso -->
+          <div class="flex flex-col gap-1.5">
+            <label class="font-label-md text-label-md text-on-surface font-semibold" for="password">
+              Criar Senha de Acesso <span class="text-error">*</span>
+            </label>
+            <div
+              class="relative flex items-center bg-surface-container-low rounded-xl focus-within:bg-surface-container-lowest focus-within:shadow-md transition-all">
+              <span class="material-symbols-outlined absolute left-3.5 text-on-surface-variant text-[20px]">key</span>
+              <input
+                class="w-full bg-transparent py-3.5 pl-11 pr-11 font-body-md text-body-md text-on-surface placeholder:text-outline focus:outline-none"
+                id="password" placeholder="Digite uma senha forte" required="" type="password">
+              <button
+                class="absolute right-3.5 text-on-surface-variant hover:text-on-surface p-1 flex items-center justify-center"
+                id="toggle-pw" type="button">
+                <span class="material-symbols-outlined text-[20px]" id="pw-icon">visibility</span>
+              </button>
+            </div>
+            <!-- Checklist de Segurança Interativo -->
+            <div class="grid grid-cols-3 gap-2 mt-1.5 pt-1">
+              <div class="flex items-center gap-1 text-on-surface-variant font-label-sm text-label-sm" id="rule-length">
+                <span class="material-symbols-outlined text-[14px] text-outline"
+                  id="rule-length-icon">radio_button_unchecked</span>
+                <span>8+ dígitos</span>
+              </div>
+              <div class="flex items-center gap-1 text-on-surface-variant font-label-sm text-label-sm" id="rule-number">
+                <span class="material-symbols-outlined text-[14px] text-outline"
+                  id="rule-number-icon">radio_button_unchecked</span>
+                <span>1 número</span>
+              </div>
+              <div class="flex items-center gap-1 text-on-surface-variant font-label-sm text-label-sm" id="rule-upper">
+                <span class="material-symbols-outlined text-[14px] text-outline"
+                  id="rule-upper-icon">radio_button_unchecked</span>
+                <span>1 maiúscula</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- Section: Modalidade de Transporte / Perfil de Tarifa -->
+        <div class="bg-surface-container-lowest rounded-2xl p-space-md shadow-sm flex flex-col gap-space-sm">
+          <div class="flex items-center justify-between">
+            <div>
+              <h2 class="font-title-md text-title-md text-on-surface">Qual passe você mais usa?</h2>
+              <p class="font-body-sm text-body-sm text-on-surface-variant mt-0.5">Você poderá adicionar outros bilhetes
+                depois.</p>
+            </div>
+            <span class="material-symbols-outlined text-primary text-[22px]">credit_card</span>
+          </div>
+          <div class="flex flex-col gap-2.5 mt-space-xs" id="ticket-type-group">
+            <!-- Option 1: Passe Comum (Default) -->
+            <label
+              class="ticket-option relative flex items-start gap-3 p-3.5 rounded-xl cursor-pointer transition-all bg-primary/5 text-on-surface shadow-sm">
+              <input checked="" class="mt-1 accent-primary" name="pass_type" type="radio" value="comum">
+              <div class="flex-1">
+                <div class="flex items-center justify-between">
+                  <span class="font-label-lg text-label-lg font-bold">🚌 Passe Comum</span>
+                  <span
+                    class="px-2 py-0.5 rounded-full bg-secondary-container text-on-secondary-container font-label-sm text-label-sm font-semibold">Ativação
+                    Instantânea</span>
+                </div>
+                <p class="font-body-sm text-body-sm text-on-surface-variant mt-0.5">
+                  Urbano, trens e metrô. Ideal para quem paga tarifa integral com cartão digital ou recarga via Pix.
+                </p>
+              </div>
+            </label>
+            <!-- Option 2: Estudante -->
+            <label
+              class="ticket-option relative flex items-start gap-3 p-3.5 rounded-xl cursor-pointer transition-all bg-surface-container-low text-on-surface hover:bg-surface-container">
+              <input class="mt-1 accent-primary" name="pass_type" type="radio" value="estudante">
+              <div class="flex-1">
+                <div class="flex items-center justify-between">
+                  <span class="font-label-lg text-label-lg font-bold">🎓 Passe Estudante</span>
+                  <span
+                    class="px-2 py-0.5 rounded-full bg-surface-container-high text-on-surface-variant font-label-sm text-label-sm">50%
+                    ou 100% de desconto</span>
+                </div>
+                <p class="font-body-sm text-body-sm text-on-surface-variant mt-0.5">
+                  Requer envio de comprovante escolar e foto na próxima etapa para liberação do benefício.
+                </p>
+              </div>
+            </label>
+            <!-- Option 3: Vale-Transporte -->
+            <label
+              class="ticket-option relative flex items-start gap-3 p-3.5 rounded-xl cursor-pointer transition-all bg-surface-container-low text-on-surface hover:bg-surface-container">
+              <input class="mt-1 accent-primary" name="pass_type" type="radio" value="vt">
+              <div class="flex-1">
+                <div class="flex items-center justify-between">
+                  <span class="font-label-lg text-label-lg font-bold">🏢 Vale-Transporte (VT)</span>
+                  <span
+                    class="px-2 py-0.5 rounded-full bg-surface-container-high text-on-surface-variant font-label-sm text-label-sm">Pelo
+                    Empregador</span>
+                </div>
+                <p class="font-body-sm text-body-sm text-on-surface-variant mt-0.5">
+                  Vinculado ao CNPJ da sua empresa. Os créditos creditados caem diretamente na sua carteira.
+                </p>
+              </div>
+            </label>
+          </div>
+        </div>
+        <!-- Section: Termos, Privacidade & Opt-ins -->
+        <div class="bg-surface-container-lowest rounded-2xl p-space-md shadow-sm flex flex-col gap-space-sm">
+          <!-- Terms Checkbox -->
+          <label class="flex items-start gap-3 cursor-pointer select-none">
+            <input class="mt-1 h-5 w-5 rounded accent-primary cursor-pointer" id="terms-check" required=""
+              type="checkbox">
+            <span class="font-body-sm text-body-sm text-on-surface">
+              Li e concordo com os <a class="text-primary font-semibold hover:underline" href="#">Termos de Uso</a> e <a
+                class="text-primary font-semibold hover:underline" href="#">Política de Privacidade</a> do SmartCard BUS e
+              autorizo a consulta cadastral para validação do cartão.
+            </span>
+          </label>
+          <!-- WhatsApp Opt-In Toggle -->
+          <div
+            class="flex items-center justify-between pt-space-xs mt-space-xs bg-surface-container-low p-3 rounded-xl">
+            <div class="flex items-center gap-2.5 max-w-[80%]">
+              <span class="material-symbols-outlined text-secondary text-[22px]">notifications_active</span>
+              <div class="flex flex-col">
+                <span class="font-label-md text-label-md text-on-surface font-semibold">Avisos via WhatsApp</span>
+                <span class="font-body-sm text-body-sm text-on-surface-variant">Receber alertas de saldo baixo e
+                  promoções de recarga</span>
+              </div>
+            </div>
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input checked="" class="sr-only peer" id="whatsapp-toggle" type="checkbox">
+              <div
+                class="w-11 h-6 bg-surface-dim peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-secondary">
+              </div>
+            </label>
+          </div>
+        </div>
+        <!-- Actions & CTA -->
+        <div class="flex flex-col gap-3 mt-space-xs">
+          <button
+            class="w-full h-14 bg-primary-container text-on-primary font-label-lg text-label-lg font-bold rounded-2xl flex items-center justify-center gap-2 shadow-lg shadow-primary-container/20 active:scale-[0.98] transition-transform"
+            id="submit-btn" type="submit">
+            <span>Continuar Cadastro</span>
+            <span class="material-symbols-outlined text-[20px]">arrow_forward</span>
+          </button>
+          <!-- Social / Rapid Sign Up Divider -->
+          <div class="flex items-center gap-3 my-1">
+            <div class="h-px bg-surface-container-highest flex-1"></div>
+            <span class="font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wider">Ou cadastrar
+              rapidamente com</span>
+            <div class="h-px bg-surface-container-highest flex-1"></div>
+          </div>
+          <!-- Quick Social Buttons -->
+          <div class="grid grid-cols-2 gap-3">
+            <button
+              class="h-12 bg-surface-container-lowest text-on-surface font-label-md text-label-md rounded-xl flex items-center justify-center gap-2 shadow-sm hover:bg-surface-container active:scale-95 transition-all"
+              type="button">
+              <svg class="w-5 h-5" viewBox="0 0 24 24">
+                <path
+                  d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.66-5.17 3.66-9.17z"
+                  fill="#4285F4"></path>
+                <path
+                  d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.34 24 12 24z"
+                  fill="#34A853"></path>
+                <path
+                  d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 9.99 0 12s.45 3.82 1.25 5.42l4.03-3.15z"
+                  fill="#FBBC05"></path>
+                <path
+                  d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.34 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"
+                  fill="#EA4335"></path>
+              </svg>
+              <span>Google</span>
+            </button>
+            <button
+              class="h-12 bg-surface-container-lowest text-on-surface font-label-md text-label-md rounded-xl flex items-center justify-center gap-2 shadow-sm hover:bg-surface-container active:scale-95 transition-all"
+              type="button">
+              <svg class="w-5 h-5 fill-current" viewBox="0 0 24 24">
+                <path
+                  d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M15.97 6.37c.62-.75 1.04-1.8 0.92-2.85-.9.04-1.98.6-2.61 1.34-.56.64-1.05 1.7-0.92 2.72 1 .08 2-.46 2.61-1.21z">
+                </path>
+              </svg>
+              <span>Apple ID</span>
+            </button>
+          </div>
+          <!-- Footer Help & Login Redirect -->
+          <div class="text-center mt-space-sm">
+            <p class="font-body-sm text-body-sm text-on-surface-variant">
+              Já possui conta cadastrada?
+              <a class="font-label-md text-label-md text-primary font-bold hover:underline" href="#">Fazer Login</a>
+            </p>
+          </div>
+        </div>
+      </form>
+      <!-- Security assurance note -->
+      <div class="mt-space-lg flex items-center justify-center gap-1.5 text-outline text-body-sm font-body-sm">
+        <span class="material-symbols-outlined text-[16px]">verified_user</span>
+        <span>Conexão criptografada de ponta a ponta (SSL 256-bit)</span>
+      </div>
+    </div>
+    <script>
+        (function () {
+          // Mask helper for inputs
+          const cpfInput = document.getElementById('cpf');
+          const phoneInput = document.getElementById('phone');
+          const birthDateInput = document.getElementById('birth-date');
+          const passwordInput = document.getElementById('password');
+          const togglePwBtn = document.getElementById('toggle-pw');
+          const pwIcon = document.getElementById('pw-icon');
+
+          // CPF Formatting
+          if (cpfInput) {
+            cpfInput.addEventListener('input', function (e) {
+              let v = e.target.value.replace(/\D/g, '');
+              if (v.length > 11) v = v.substring(0, 11);
+              v = v.replace(/(\d{3})(\d)/, '$1.$2');
+              v = v.replace(/(\d{3})(\d)/, '$1.$2');
+              v = v.replace(/(\d{3})(\d{1,2})$/, '$1-$2');
+              e.target.value = v;
+            });
+          }
+
+          // Phone Formatting
+          if (phoneInput) {
+            phoneInput.addEventListener('input', function (e) {
+              let v = e.target.value.replace(/\D/g, '');
+              if (v.length > 11) v = v.substring(0, 11);
+              if (v.length > 10) {
+                v = v.replace(/^(\d{2})(\d{5})(\d{4})/, '($1) $2-$3');
+              } else if (v.length > 5) {
+                v = v.replace(/^(\d{2})(\d{4})(\d{0,4})/, '($1) $2-$3');
+              } else if (v.length > 2) {
+                v = v.replace(/^(\d{2})(\d{0,5})/, '($1) $2');
+              } else {
+                v = v.replace(/^(\d*)/, '($1');
+              }
+              e.target.value = v;
+            });
+          }
+
+          // Birth date formatting
+          if (birthDateInput) {
+            birthDateInput.addEventListener('input', function (e) {
+              let v = e.target.value.replace(/\D/g, '');
+              if (v.length > 8) v = v.substring(0, 8);
+              v = v.replace(/(\d{2})(\d)/, '$1/$2');
+              v = v.replace(/(\d{2})(\d)/, '$1/$2');
+              e.target.value = v;
+            });
+          }
+
+          // Password visibility toggle
+          if (togglePwBtn && passwordInput && pwIcon) {
+            togglePwBtn.addEventListener('click', function () {
+              const isPassword = passwordInput.getAttribute('type') === 'password';
+              passwordInput.setAttribute('type', isPassword ? 'text' : 'password');
+              pwIcon.textContent = isPassword ? 'visibility_off' : 'visibility';
+            });
+          }
+
+          // Interactive Password Requirements Checker
+          if (passwordInput) {
+            const ruleLength = document.getElementById('rule-length');
+            const ruleLengthIcon = document.getElementById('rule-length-icon');
+            const ruleNumber = document.getElementById('rule-number');
+            const ruleNumberIcon = document.getElementById('rule-number-icon');
+            const ruleUpper = document.getElementById('rule-upper');
+            const ruleUpperIcon = document.getElementById('rule-upper-icon');
+
+            passwordInput.addEventListener('input', function () {
+              const val = passwordInput.value;
+
+              // Rule 1: 8+ length
+              const hasLength = val.length >= 8;
+              updateRule(ruleLength, ruleLengthIcon, hasLength);
+
+              // Rule 2: 1 number
+              const hasNumber = /\d/.test(val);
+              updateRule(ruleNumber, ruleNumberIcon, hasNumber);
+
+              // Rule 3: 1 upper
+              const hasUpper = /[A-Z]/.test(val);
+              updateRule(ruleUpper, ruleUpperIcon, hasUpper);
+            });
+
+            function updateRule(element, iconEl, isValid) {
+              if (!element || !iconEl) return;
+              if (isValid) {
+                element.classList.remove('text-on-surface-variant');
+                element.classList.add('text-secondary', 'font-semibold');
+                iconEl.textContent = 'check_circle';
+                iconEl.classList.remove('text-outline');
+                iconEl.classList.add('text-secondary');
+              } else {
+                element.classList.remove('text-secondary', 'font-semibold');
+                element.classList.add('text-on-surface-variant');
+                iconEl.textContent = 'radio_button_unchecked';
+                iconEl.classList.remove('text-secondary');
+                iconEl.classList.add('text-outline');
+              }
+            }
+          }
+
+          // Radio style highlighter for card options
+          const options = document.querySelectorAll('.ticket-option');
+          options.forEach(opt => {
+            opt.addEventListener('click', () => {
+              options.forEach(o => {
+                o.classList.remove('bg-primary/5', 'shadow-sm');
+                o.classList.add('bg-surface-container-low');
+              });
+              opt.classList.remove('bg-surface-container-low');
+              opt.classList.add('bg-primary/5', 'shadow-sm');
+            });
+          });
+        })();
+    </script>
+  </main>
+  <div id="snapdom-sandbox" data-snapdom-sandbox="true" aria-hidden="true"
+    style="position: absolute; left: -9999px; top: -9999px; width: 0px; height: 0px; overflow: hidden;"></div>
+</body>
+
+</html>
