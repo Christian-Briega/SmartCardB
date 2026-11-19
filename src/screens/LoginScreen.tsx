@@ -350,15 +350,6 @@ export const LoginScreen: React.FC = () => {
           <Text style={styles.biometricsBtnText}>Acessar com Biometria ou Face ID</Text>
         </TouchableOpacity>
 
-        {/* Passwordless OTP Access Link */}
-        <TouchableOpacity
-          style={styles.smsLinkBtn}
-          onPress={() => setCurrentScreen('smsVerification')}
-        >
-          <MaterialIcons name="smartphone" size={18} color={themeColors.primary} />
-          <Text style={styles.smsLinkText}>Entrar com Código SMS / WhatsApp</Text>
-        </TouchableOpacity>
-
         {/* Divider */}
         <View style={styles.dividerRow}>
           <View style={styles.dividerLine} />

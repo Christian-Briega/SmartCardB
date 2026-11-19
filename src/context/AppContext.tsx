@@ -124,6 +124,15 @@ interface AppContextData {
     whatsappAlerts: boolean,
     birthDate?: string
   ) => void;
+  registerAsync: (
+    name: string,
+    cpf: string,
+    email: string,
+    phone: string,
+    password: string,
+    whatsappAlerts: boolean,
+    birthDate?: string
+  ) => Promise<{ ok: boolean; error?: string; field?: string }>;
   updateUser: (updates: Partial<User>) => void;
   resetPassword: (identifier: string, newPass: string) => boolean;
   resetPasswordAsync: (identifier: string, newPass: string) => Promise<boolean>;
@@ -547,14 +556,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return false;
   };
 
-  const loginWithPhone = (phone: string) => {
-    const phoneDigits = phone.replace(/\D/g, '');
-    if (!phoneDigits || phoneDigits !== user.phone.replace(/\D/g, '')) return false;
+  const loginWithPhone = (identifier: string) => {
+    const clean = identifier.trim().toLowerCase();
+    const isEmail = clean.includes('@');
+    const phoneDigits = identifier.replace(/\D/g, '');
+    const matchesLocal = isEmail
+      ? Boolean(user.email) && clean === user.email.trim().toLowerCase()
+      : Boolean(phoneDigits) && phoneDigits === user.phone.replace(/\D/g, '');
+
+    if (!matchesLocal) return false;
 
     setIsLoggedIn(true);
     setCurrentScreen(hasCompletedPassSelection ? 'home' : 'passSelection');
 
-    mysqlApiService.loginWithPhone(phone).then((res) => {
+    mysqlApiService.loginWithPhone(identifier).then((res) => {
       if (res?.ok && res.state) {
         applyMysqlUserState(res.state);
       }
@@ -569,19 +584,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return true;
   };
 
-  const loginWithPhoneAsync = async (phone: string): Promise<boolean> => {
-    const phoneDigits = phone.replace(/\D/g, '');
-    if (phoneDigits && user.phone && phoneDigits === user.phone.replace(/\D/g, '')) {
-      return loginWithPhone(phone);
-    }
-    const res = await mysqlApiService.loginWithPhone(phone);
+  const loginWithPhoneAsync = async (identifier: string): Promise<boolean> => {
+    const res = await mysqlApiService.loginWithPhone(identifier);
     if (res?.ok && res.state) {
       applyMysqlUserState(res.state);
       setIsLoggedIn(true);
       setCurrentScreen(res.state.hasCompletedPassSelection ? 'home' : 'passSelection');
       return true;
     }
-    return false;
+    return loginWithPhone(identifier);
   };
 
   const enterDemoMode = () => {
@@ -785,7 +796,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return { ok: true };
   };
 
-  const register = (
+  const registerAsync = async (
     name: string,
     cpf: string,
     email: string,
@@ -793,11 +804,59 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     password: string,
     whatsappAlerts: boolean,
     birthDate?: string
-  ) => {
+  ): Promise<{ ok: boolean; error?: string; field?: string }> => {
     const formattedName = name.trim();
     const newUserId = `usr_${Date.now()}`;
-    setUser({
+
+    const res = await mysqlApiService.registerUser({
       id: newUserId,
+      name: formattedName,
+      cpf,
+      email,
+      phone,
+      birthDate,
+      password,
+      whatsappAlerts,
+    });
+
+    if (res && !res.ok) {
+      return {
+        ok: false,
+        field: res.field,
+        error:
+          res.error ||
+          'Este CPF, e-mail, celular ou nome já está cadastrado em outra conta.',
+      };
+    }
+
+    // Validação local caso offline
+    if (!res) {
+      if (user.cpf && user.cpf.replace(/\D/g, '') === cpf.replace(/\D/g, '')) {
+        return {
+          ok: false,
+          field: 'cpf',
+          error: 'Este CPF já está cadastrado em outra conta.',
+        };
+      }
+      if (user.email && user.email.trim().toLowerCase() === email.trim().toLowerCase()) {
+        return {
+          ok: false,
+          field: 'email',
+          error: 'Este e-mail já está cadastrado em outra conta.',
+        };
+      }
+      if (user.phone && user.phone.replace(/\D/g, '') === phone.replace(/\D/g, '')) {
+        return {
+          ok: false,
+          field: 'phone',
+          error: 'Este número de celular já está cadastrado em outra conta.',
+        };
+      }
+    }
+
+    const savedId = res?.user?.id || newUserId;
+    setUser({
+      id: savedId,
       name: formattedName,
       cpf,
       email,
@@ -809,35 +868,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
     setRegisteredPassword(password);
 
-    mysqlApiService
-      .registerUser({
-        id: newUserId,
-        name: formattedName,
-        cpf,
-        email,
-        phone,
-        birthDate,
-        password,
-        whatsappAlerts,
-      })
-      .then((res) => {
-        if (res?.ok && res.user?.id) {
-          setUser((prev) => ({ ...prev, id: res.user!.id }));
-        }
-      });
-
     setCards([]);
     setSelectedCardId(null);
     setHasCompletedPassSelection(false);
     setFamilyMembers([]);
     setBalanceLoanRequest(null);
     setCreditReserveRequest(null);
-
     setTransactions([]);
     setNotifications([]);
 
     setIsLoggedIn(false);
     setCurrentScreen('login');
+    return { ok: true };
+  };
+
+  const register = (
+    name: string,
+    cpf: string,
+    email: string,
+    phone: string,
+    password: string,
+    whatsappAlerts: boolean,
+    birthDate?: string
+  ) => {
+    registerAsync(name, cpf, email, phone, password, whatsappAlerts, birthDate);
   };
 
   const updateUser = (updates: Partial<User>) => {
@@ -1173,6 +1227,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         logout,
         deleteAccountAsync,
         register,
+        registerAsync,
         updateUser,
         resetPassword,
         resetPasswordAsync,

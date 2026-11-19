@@ -6,40 +6,7 @@
 
 const http = require('http');
 const crypto = require('crypto');
-const fs = require('fs');
-const path = require('path');
 const { getMysqlPool, queryMysql, MYSQL_CONFIG } = require('./db');
-const {
-  initWhatsAppClient,
-  getWhatsAppStatus,
-  requestWhatsAppPairingCode,
-  sendRealWhatsAppMessage,
-} = require('./whatsappService');
-
-function reloadEnvConfig() {
-  try {
-    const envPath = path.join(__dirname, '..', '.env');
-    if (fs.existsSync(envPath)) {
-      const lines = fs.readFileSync(envPath, 'utf8').split(/\r?\n/);
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('#')) continue;
-        const eqIdx = trimmed.indexOf('=');
-        if (eqIdx > 0) {
-          const key = trimmed.slice(0, eqIdx).trim();
-          const val = trimmed.slice(eqIdx + 1).trim();
-          if (val) {
-            process.env[key] = val;
-          }
-        }
-      }
-    }
-  } catch {
-    // Ignora erro de leitura de .env
-  }
-}
-
-reloadEnvConfig();
 
 const PORT = Number(process.env.PORT || process.env.API_PORT || 3001);
 const FARE = 4.4;
@@ -150,42 +117,38 @@ async function resolveOrCreateUserId(identifier, fallback = {}) {
     }
   }
 
-  // Somente usa a sessão ativa ou último usuário se o identificador for genérico ('default_user' ou vazio) e sem dados de perfil
-  if ((!raw || raw === 'default_user') && !fbCpfDigits && !fbEmail) {
-    const activeSession = await queryMysql(
-      'SELECT user_id FROM user_sessions WHERE session_key = ? AND user_id IS NOT NULL LIMIT 1',
-      [ACTIVE_SESSION_KEY]
-    );
-    if (activeSession.length > 0 && activeSession[0].user_id) {
-      const checkUser = await queryMysql('SELECT id FROM users WHERE id = ? LIMIT 1', [
-        activeSession[0].user_id,
-      ]);
-      if (checkUser.length > 0) {
-        return checkUser[0].id;
-      }
-    }
-
-    const anyUser = await queryMysql('SELECT id FROM users ORDER BY updated_at DESC LIMIT 1');
-    if (anyUser.length > 0) {
-      return anyUser[0].id;
+  // Se o identificador não foi localizado diretamente, utiliza a sessão ativa ou o último usuário ativo
+  const activeSession = await queryMysql(
+    'SELECT user_id FROM user_sessions WHERE session_key = ? AND user_id IS NOT NULL LIMIT 1',
+    [ACTIVE_SESSION_KEY]
+  );
+  if (activeSession.length > 0 && activeSession[0].user_id) {
+    const checkUser = await queryMysql('SELECT id FROM users WHERE id = ? LIMIT 1', [
+      activeSession[0].user_id,
+    ]);
+    if (checkUser.length > 0) {
+      return checkUser[0].id;
     }
   }
 
-  // Cria o novo usuário no banco MySQL e sincroniza as tabelas usuarios
-  const newUserId = raw && raw.startsWith('usr_') ? raw : `usr_${Date.now()}`;
+  const anyUser = await queryMysql('SELECT id FROM users ORDER BY updated_at DESC LIMIT 1');
+  if (anyUser.length > 0) {
+    return anyUser[0].id;
+  }
+
+  // Somente cria usuário de demonstração caso o banco esteja 100% vazio
+  const stamp = String(Date.now());
+  const newUserId = raw && raw.startsWith('usr_') ? raw : `usr_${stamp}`;
   const fallbackCpf =
     fbCpf ||
     (digits.length === 11
       ? digits.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4')
-      : `${String(Date.now()).slice(-9)}00`.replace(
-          /(\d{3})(\d{3})(\d{3})(\d{2})/,
-          '$1.$2.$3-$4'
-        ));
+      : `${stamp.slice(-9)}00`.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4'));
   const fallbackEmail =
-    fbEmail ||
-    (raw.includes('@') ? raw.toLowerCase() : `passageiro.${Date.now()}@smartcardbus.com.br`);
-  const fallbackName = fallback.name || 'Passageiro SmartCard';
-  const fallbackPhone = fallback.phone || '(11) 99999-9999';
+    fbEmail || (raw.includes('@') ? raw.toLowerCase() : `demo.${stamp}@smartcardbus.com.br`);
+  const fallbackName = fallback.name || `Passageiro Demo ${stamp.slice(-4)}`;
+  const fallbackPhone =
+    fallback.phone || `(11) 9${stamp.slice(-8, -4)}-${stamp.slice(-4)}`;
   const fallbackBirthDate = fallback.birthDate || null;
   const fallbackPassHash = fallback.password
     ? hashPassword(fallback.password)
@@ -195,9 +158,6 @@ async function resolveOrCreateUserId(identifier, fallback = {}) {
     `INSERT INTO users (id, name, cpf, email, phone, birth_date, password_hash, whatsapp_alerts, has_completed_pass_selection)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
      ON DUPLICATE KEY UPDATE
-       name = VALUES(name),
-       phone = VALUES(phone),
-       birth_date = COALESCE(VALUES(birth_date), birth_date),
        updated_at = CURRENT_TIMESTAMP`,
     [
       newUserId,
@@ -254,20 +214,23 @@ async function syncUserMirrorTables(userId) {
     const isActiveFlag =
       u.is_active === undefined || u.is_active === null ? 1 : Number(u.is_active) ? 1 : 0;
     const statusText = u.status || (isActiveFlag === 0 ? 'inativo' : 'ativo');
+    const uCpfDigits = String(u.cpf || '').replace(/\D/g, '');
+    const uPhoneDigits = String(u.phone || '').replace(/\D/g, '');
+
+    // Remove registros espelho antigos do mesmo titular antes de sincronizar para respeitar UNIQUE em nome, cpf, email e telefone
+    await queryMysql(
+      `DELETE FROM smartcard_bus.usuarios
+       WHERE user_id = ?
+          OR REPLACE(REPLACE(cpf, '.', ''), '-', '') = ?
+          OR LOWER(email) = LOWER(?)
+          OR REPLACE(REPLACE(REPLACE(REPLACE(telefone, '(', ''), ')', ''), '-', ''), ' ', '') = ?
+          OR LOWER(TRIM(nome)) = LOWER(TRIM(?))`,
+      [u.id, uCpfDigits, u.email, uPhoneDigits, u.name]
+    );
 
     await queryMysql(
       `INSERT INTO smartcard_bus.usuarios (user_id, nome, cpf, email, telefone, data_nascimento, senha, saldo, ativo, status, criado_em)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE
-         user_id = VALUES(user_id),
-         nome = VALUES(nome),
-         cpf = VALUES(cpf),
-         telefone = VALUES(telefone),
-         data_nascimento = COALESCE(VALUES(data_nascimento), smartcard_bus.usuarios.data_nascimento),
-         senha = VALUES(senha),
-         saldo = VALUES(saldo),
-         ativo = VALUES(ativo),
-         status = VALUES(status)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         u.id,
         u.name,
@@ -284,17 +247,17 @@ async function syncUserMirrorTables(userId) {
     );
 
     await queryMysql(
+      `DELETE FROM smartcard_db.usuarios
+       WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ?
+          OR LOWER(email) = LOWER(?)
+          OR REPLACE(REPLACE(REPLACE(REPLACE(telefone, '(', ''), ')', ''), '-', ''), ' ', '') = ?
+          OR LOWER(TRIM(nome)) = LOWER(TRIM(?))`,
+      [uCpfDigits, u.email, uPhoneDigits, u.name]
+    );
+
+    await queryMysql(
       `INSERT INTO smartcard_db.usuarios (nome, cpf, email, telefone, data_nascimento, senha, saldo, ativo, status, criado_em)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE
-         nome = VALUES(nome),
-         cpf = VALUES(cpf),
-         telefone = VALUES(telefone),
-         data_nascimento = COALESCE(VALUES(data_nascimento), smartcard_db.usuarios.data_nascimento),
-         senha = VALUES(senha),
-         saldo = VALUES(saldo),
-         ativo = VALUES(ativo),
-         status = VALUES(status)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         u.name,
         u.cpf,
@@ -576,35 +539,120 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    // 5. Cadastro de Usuário no MySQL (POST /api/auth/register)
+    // 5. Cadastro de Usuário no MySQL com Validação Estrita de Unicidade de Dados Pessoais (POST /api/auth/register)
     if (req.method === 'POST' && pathname === '/api/auth/register') {
       const body = await parseJsonBody(req);
       const passwordHash = hashPassword(body.password || '');
+      const cleanName = String(body.name || '').trim();
       const cleanEmail = String(body.email || '').trim().toLowerCase();
       const cleanCpf = String(body.cpf || '').trim();
       const cpfDigits = cleanCpf.replace(/\D/g, '');
+      const formattedCpf =
+        cpfDigits.length === 11
+          ? cpfDigits.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4')
+          : cleanCpf;
+      const cleanPhone = String(body.phone || '').trim();
+      const phoneDigits = cleanPhone.replace(/\D/g, '');
+      const formattedPhone =
+        phoneDigits.length === 11
+          ? phoneDigits.replace(/(\d{2})(\d{5})(\d{4})/, '($1) $2-$3')
+          : phoneDigits.length === 10
+            ? phoneDigits.replace(/(\d{2})(\d{4})(\d{4})/, '($1) $2-$3')
+            : cleanPhone;
       const cleanBirthDate = body.birthDate ? String(body.birthDate).trim() : null;
 
-      // Verifica se já existe usuário com o mesmo CPF ou E-mail para evitar conflito de chave única
+      // Consulta se qualquer dado pessoal (CPF, E-mail, Celular ou Nome Completo) já existe no banco de dados
       const existingMatches = await queryMysql(
         `SELECT * FROM users
          WHERE cpf = ?
             OR (CHAR_LENGTH(?) = 11 AND REPLACE(REPLACE(cpf, '.', ''), '-', '') = ?)
-            OR LOWER(email) = LOWER(?)`,
-        [cleanCpf, cpfDigits, cpfDigits, cleanEmail]
+            OR LOWER(TRIM(email)) = LOWER(?)
+            OR (CHAR_LENGTH(?) >= 10 AND REPLACE(REPLACE(REPLACE(REPLACE(phone, '(', ''), ')', ''), '-', ''), ' ', '') = ?)
+            OR LOWER(TRIM(name)) = LOWER(?)`,
+        [formattedCpf, cpfDigits, cpfDigits, cleanEmail, phoneDigits, phoneDigits, cleanName]
       );
+
+      // Verifica conflitos com contas ATIVAS: nenhum dado pessoal pode se repetir em outra conta
+      const activeConflicts = existingMatches.filter(
+        (row) => Number(row.is_active) !== 0 && row.status !== 'inativo'
+      );
+
+      if (activeConflicts.length > 0) {
+        const cpfConflict = activeConflicts.find(
+          (r) => String(r.cpf || '').replace(/\D/g, '') === cpfDigits
+        );
+        if (cpfConflict) {
+          return sendJson(res, 409, {
+            ok: false,
+            field: 'cpf',
+            error:
+              'Este CPF já está cadastrado em outra conta. Não é permitido criar mais de um cadastro com o mesmo CPF.',
+          });
+        }
+
+        const emailConflict = activeConflicts.find(
+          (r) => String(r.email || '').trim().toLowerCase() === cleanEmail
+        );
+        if (emailConflict) {
+          return sendJson(res, 409, {
+            ok: false,
+            field: 'email',
+            error:
+              'Este e-mail já está cadastrado em outra conta. Todos os dados pessoais devem ser únicos.',
+          });
+        }
+
+        const phoneConflict = activeConflicts.find(
+          (r) => String(r.phone || '').replace(/\D/g, '') === phoneDigits
+        );
+        if (phoneConflict) {
+          return sendJson(res, 409, {
+            ok: false,
+            field: 'phone',
+            error:
+              'Este número de celular/WhatsApp já está cadastrado em outra conta. Informe um número exclusivo.',
+          });
+        }
+
+        const nameConflict = activeConflicts.find(
+          (r) => String(r.name || '').trim().toLowerCase() === cleanName.toLowerCase()
+        );
+        if (nameConflict) {
+          return sendJson(res, 409, {
+            ok: false,
+            field: 'name',
+            error:
+              'Já existe uma conta cadastrada com este nome completo no sistema.',
+          });
+        }
+      }
 
       const requestedId =
         body.id && String(body.id).startsWith('usr_') ? String(body.id) : `usr_${Date.now()}`;
       let targetUserId = requestedId;
+
       if (existingMatches.length > 0) {
-        targetUserId = existingMatches[0].id;
-        // Caso CPF e E-mail pertençam a 2 registros distintos de testes anteriores, remove o duplicado
+        // Caso os dados coincidam com registros inativos diferentes, bloqueia por conflito de unicidade
         if (existingMatches.length > 1) {
-          for (let i = 1; i < existingMatches.length; i += 1) {
-            await queryMysql('DELETE FROM users WHERE id = ?', [existingMatches[i].id]);
-          }
+          return sendJson(res, 409, {
+            ok: false,
+            error:
+              'Os dados informados (CPF, e-mail, telefone ou nome) conflitam com cadastros distintos existentes no banco de dados.',
+          });
         }
+
+        const inactiveRow = existingMatches[0];
+        const inactiveCpfDigits = String(inactiveRow.cpf || '').replace(/\D/g, '');
+        if (inactiveCpfDigits !== cpfDigits) {
+          return sendJson(res, 409, {
+            ok: false,
+            error:
+              'O e-mail, telefone ou nome informado já pertence a outro CPF registrado no banco de dados.',
+          });
+        }
+
+        // Reativa a conta que estava inativada do próprio titular do CPF
+        targetUserId = inactiveRow.id;
         await queryMysql(
           `UPDATE users SET
              name = ?,
@@ -620,10 +668,10 @@ const server = http.createServer(async (req, res) => {
              updated_at = CURRENT_TIMESTAMP
            WHERE id = ?`,
           [
-            body.name,
-            cleanCpf,
+            cleanName,
+            formattedCpf,
             cleanEmail,
-            body.phone,
+            formattedPhone,
             cleanBirthDate,
             passwordHash,
             body.whatsappAlerts ? 1 : 0,
@@ -637,10 +685,10 @@ const server = http.createServer(async (req, res) => {
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'ativo')`,
           [
             targetUserId,
-            body.name,
-            cleanCpf,
+            cleanName,
+            formattedCpf,
             cleanEmail,
-            body.phone,
+            formattedPhone,
             cleanBirthDate,
             passwordHash,
             body.whatsappAlerts ? 1 : 0,
@@ -656,7 +704,7 @@ const server = http.createServer(async (req, res) => {
       await syncUserMirrorTables(savedUser.id);
       const state = await fetchUserFullState(savedUser.id);
       console.log(
-        `[MySQL] Usuário cadastrado/reativado e salvo em smartcard_bus/smartcard_db: ${savedUser.name} (${savedUser.cpf} | ${savedUser.email})`
+        `[MySQL] Usuário único cadastrado e salvo em smartcard_bus/smartcard_db: ${savedUser.name} (${savedUser.cpf} | ${savedUser.email})`
       );
 
       return sendJson(res, 201, {
@@ -707,441 +755,40 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { ok: true, token, state });
     }
 
-    // 7. Envio e Validação Real de Código OTP por SMS / WhatsApp (POST /api/auth/send-otp, /api/auth/verify-otp e /api/auth/login-phone)
-    if (req.method === 'GET' && pathname === '/api/whatsapp/status') {
-      reloadEnvConfig();
-      const status = getWhatsAppStatus();
-      if (status.status === 'disconnected') {
-        initWhatsAppClient().catch(() => {});
-      }
-      return sendJson(res, 200, {
-        ok: true,
-        ...getWhatsAppStatus(),
-        hasGatewayKey: Boolean(
-          process.env.CALLMEBOT_API_KEY ||
-            process.env.WHATSAPP_ACCESS_TOKEN ||
-            process.env.TWILIO_ACCOUNT_SID ||
-            process.env.ZAPI_INSTANCE_URL
-        ),
-      });
-    }
-
-    if (req.method === 'POST' && pathname === '/api/whatsapp/config') {
-      const body = await parseJsonBody(req);
-      const apiKey = String(body.callmebotApiKey || '').trim();
-      if (apiKey) {
-        process.env.CALLMEBOT_API_KEY = apiKey;
-        try {
-          const envPath = path.join(__dirname, '..', '.env');
-          let content = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : '';
-          if (content.includes('CALLMEBOT_API_KEY=')) {
-            content = content.replace(/CALLMEBOT_API_KEY=.*/g, `CALLMEBOT_API_KEY=${apiKey}`);
-          } else {
-            content += `\nCALLMEBOT_API_KEY=${apiKey}\n`;
-          }
-          fs.writeFileSync(envPath, content, 'utf8');
-        } catch {
-          // Ignora falha de gravação em arquivo
-        }
-      }
-      return sendJson(res, 200, { ok: true });
-    }
-
-    if (req.method === 'POST' && pathname === '/api/whatsapp/pair') {
-      const body = await parseJsonBody(req);
-      const rawPhone = String(body.phone || '').replace(/\D/g, '');
-      if (rawPhone.length < 10) {
-        return sendJson(res, 400, {
-          ok: false,
-          error: 'Informe o número com DDD para gerar o código de pareamento.',
-        });
-      }
-      try {
-        const pairingCode = await requestWhatsAppPairingCode(rawPhone);
-        return sendJson(res, 200, { ok: true, pairingCode });
-      } catch (err) {
-        return sendJson(res, 500, { ok: false, error: err.message });
-      }
-    }
-
-    if (req.method === 'GET' && pathname === '/api/whatsapp/qr') {
-      const status = getWhatsAppStatus();
-      if (status.status === 'disconnected') {
-        await initWhatsAppClient();
-      }
-      const current = getWhatsAppStatus();
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(`<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-  <meta charset="utf-8" />
-  <meta http-equiv="refresh" content="4" />
-  <title>SmartCard BUS - Conexão WhatsApp</title>
-  <style>
-    body { font-family: system-ui, sans-serif; background: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
-    .card { background: #fff; border-radius: 20px; padding: 32px; max-width: 420px; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,0.08); }
-    h2 { color: #0f172a; margin-top: 0; }
-    p { color: #475569; font-size: 14px; line-height: 1.5; }
-    img { width: 260px; height: 260px; border-radius: 12px; border: 1px solid #e2e8f0; margin: 16px 0; }
-    .badge { display: inline-block; padding: 6px 14px; border-radius: 999px; font-weight: 700; font-size: 13px; background: ${
-      current.connected ? '#dcfce7' : '#dbeafe'
-    }; color: ${current.connected ? '#166534' : '#1e40af'}; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h2>Servidor WhatsApp SmartCard BUS</h2>
-    <div class="badge">${
-      current.connected ? 'CONECTADO (+' + current.connectedPhone + ')' : 'AGUARDANDO LEITURA DO QR CODE'
-    }</div>
-    ${
-      current.connected
-        ? '<p>O servidor já está conectado e pronto para enviar códigos reais por WhatsApp!</p>'
-        : current.qrCodeDataUrl
-        ? `<img src="${current.qrCodeDataUrl}" alt="QR Code WhatsApp" /><p>No seu celular, abra o <b>WhatsApp &gt; Aparelhos conectados &gt; Conectar um aparelho</b> e aponte a câmera para este QR Code.</p>`
-        : '<p>Gerando QR Code do WhatsApp... A página atualizará automaticamente em instantes.</p>'
-    }
-  </div>
-</body>
-</html>`);
-      return;
-    }
-
-    if (req.method === 'POST' && pathname === '/api/auth/send-otp') {
-      reloadEnvConfig();
-      const body = await parseJsonBody(req);
-      if (body.callmebotApiKey) {
-        const apiKey = String(body.callmebotApiKey).trim();
-        process.env.CALLMEBOT_API_KEY = apiKey;
-        try {
-          const envPath = path.join(__dirname, '..', '.env');
-          let content = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : '';
-          if (content.includes('CALLMEBOT_API_KEY=')) {
-            content = content.replace(/CALLMEBOT_API_KEY=.*/g, `CALLMEBOT_API_KEY=${apiKey}`);
-          } else {
-            content += `\nCALLMEBOT_API_KEY=${apiKey}\n`;
-          }
-          fs.writeFileSync(envPath, content, 'utf8');
-        } catch {
-          // Ignora falha de gravação em arquivo
-        }
-      }
-      const rawPhone = String(body.phone || '').trim();
-      const phoneDigits = rawPhone.replace(/\D/g, '');
-      const channel = body.channel === 'whatsapp' ? 'whatsapp' : 'sms';
-      const mode = body.mode || 'login';
-
-      if (phoneDigits.length < 10 || phoneDigits.length > 13) {
-        return sendJson(res, 400, {
-          ok: false,
-          error: 'Informe um número de celular válido com DDD.',
-        });
-      }
-
-      const normalizedNationalDigits =
-        phoneDigits.startsWith('55') && phoneDigits.length >= 12
-          ? phoneDigits.slice(2)
-          : phoneDigits;
-
-      // Verifica se o número pertence a uma conta no MySQL
-      const userRows = await queryMysql(
-        `SELECT * FROM users
-         WHERE REPLACE(REPLACE(REPLACE(REPLACE(phone, '(', ''), ')', ''), '-', ''), ' ', '') = ?
-            OR REPLACE(REPLACE(REPLACE(REPLACE(phone, '(', ''), ')', ''), '-', ''), ' ', '') = ?
-         LIMIT 1`,
-        [normalizedNationalDigits, phoneDigits]
-      );
-
-      if (mode === 'login') {
-        if (
-          userRows.length > 0 &&
-          (Number(userRows[0].is_active) === 0 || userRows[0].status === 'inativo')
-        ) {
-          return sendJson(res, 403, {
-            ok: false,
-            inactive: true,
-            error:
-              'Esta conta está inativada. Realize o cadastro novamente para reativar seu acesso.',
-          });
-        }
-      }
-
-      // Reutiliza código recente (< 10 min) para evitar que cliques duplos gerem códigos conflitantes no WhatsApp
-      const recentOtpRows = await queryMysql(
-        `SELECT id, code FROM otp_codes
-         WHERE phone_digits = ? AND used = 0 AND created_at >= DATE_SUB(NOW(), INTERVAL 10 MINUTE)
-         ORDER BY id DESC LIMIT 1`,
-        [normalizedNationalDigits]
-      );
-
-      const code =
-        recentOtpRows.length > 0 && !body.forceNew
-          ? String(recentOtpRows[0].code)
-          : String(Math.floor(100000 + Math.random() * 900000));
-
-      const waPhone = phoneDigits.startsWith('55') ? phoneDigits : `55${normalizedNationalDigits}`;
-      const e164Phone = `+${waPhone}`;
-
-      const whatsappText = `*SmartCard BUS*\nSeu código de verificação de acesso é: *${code}*\n\nDigite este código de 6 dígitos no aplicativo para entrar.`;
-      const smsText = `SmartCard BUS: Seu codigo de verificacao de acesso e ${code}.`;
-
-      let providerStatus = 'not_sent';
-
-      // 1) Envio REAL direto via Baileys WhatsApp Socket conectado no backend
-      try {
-        const waSendResult = await sendRealWhatsAppMessage(
-          normalizedNationalDigits,
-          channel === 'whatsapp' ? whatsappText : smsText
-        );
-        if (waSendResult.sent) {
-          providerStatus = 'whatsapp_baileys_sent';
-        }
-      } catch (err) {
-        console.warn('[WhatsApp Baileys Send Error]:', err.message);
-      }
-
-      // 2) Envio REAL via Gateways Cloud (CallMeBot, Z-API, Meta Cloud API, Twilio, Textbelt)
-      if (providerStatus === 'not_sent') {
-        try {
-          if (process.env.CALLMEBOT_API_KEY && typeof fetch !== 'undefined') {
-            providerStatus = 'callmebot_whatsapp_sent';
-            const targetPhone = `55${normalizedNationalDigits}`;
-            const cmbUrl = `https://api.callmebot.com/whatsapp.php?phone=${targetPhone}&text=${encodeURIComponent(
-              whatsappText
-            )}&apikey=${encodeURIComponent(process.env.CALLMEBOT_API_KEY)}`;
-            // Dispara de forma não-bloqueante para a tela mudar na hora sem travar 30s aguardando a fila PHP do CallMeBot
-            fetch(cmbUrl)
-              .then(async (r) => {
-                const txt = await r.text().catch(() => '');
-                console.log(
-                  `[CallMeBot Dispatch] Status=${r.status} Phone=${targetPhone} Code=${code} Resp=${txt.slice(0, 120)}`
-                );
-              })
-              .catch((e) => console.warn('[CallMeBot Error]:', e.message));
-          } else if (process.env.ZAPI_INSTANCE_URL && typeof fetch !== 'undefined') {
-            const zHeaders = { 'Content-Type': 'application/json' };
-            if (process.env.ZAPI_CLIENT_TOKEN) {
-              zHeaders['Client-Token'] = process.env.ZAPI_CLIENT_TOKEN;
-            }
-            const zRes = await fetch(process.env.ZAPI_INSTANCE_URL, {
-              method: 'POST',
-              headers: zHeaders,
-              body: JSON.stringify({
-                phone: waPhone,
-                message: whatsappText,
-              }),
-            });
-            if (zRes.ok) providerStatus = 'zapi_whatsapp_sent';
-          } else if (
-            process.env.WHATSAPP_ACCESS_TOKEN &&
-            process.env.WHATSAPP_PHONE_NUMBER_ID &&
-            typeof fetch !== 'undefined'
-          ) {
-            const metaRes = await fetch(
-              `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
-              {
-                method: 'POST',
-                headers: {
-                  Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                  messaging_product: 'whatsapp',
-                  to: waPhone,
-                  type: 'text',
-                  text: { body: whatsappText },
-                }),
-              }
-            );
-            if (metaRes.ok) providerStatus = 'meta_cloud_sent';
-          } else if (
-            process.env.TWILIO_ACCOUNT_SID &&
-            process.env.TWILIO_AUTH_TOKEN &&
-            typeof fetch !== 'undefined'
-          ) {
-            const sid = process.env.TWILIO_ACCOUNT_SID;
-            const auth = Buffer.from(`${sid}:${process.env.TWILIO_AUTH_TOKEN}`).toString('base64');
-            const fromField =
-              channel === 'whatsapp'
-                ? `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER || '+14155238886'}`
-                : process.env.TWILIO_FROM_NUMBER || '';
-            const toField = channel === 'whatsapp' ? `whatsapp:${e164Phone}` : e164Phone;
-            if (fromField) {
-              const params = new URLSearchParams({
-                From: fromField,
-                To: toField,
-                Body: channel === 'whatsapp' ? whatsappText : smsText,
-              });
-              const twilioRes = await fetch(
-                `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
-                {
-                  method: 'POST',
-                  headers: {
-                    Authorization: `Basic ${auth}`,
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                  },
-                  body: params.toString(),
-                }
-              );
-              if (twilioRes.ok) providerStatus = 'twilio_sent';
-            }
-          } else if (
-            channel === 'sms' &&
-            process.env.TEXTBELT_API_KEY &&
-            typeof fetch !== 'undefined'
-          ) {
-            const tbRes = await fetch('https://textbelt.com/text', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                phone: e164Phone,
-                message: smsText,
-                key: process.env.TEXTBELT_API_KEY,
-              }),
-            });
-            const tbData = await tbRes.json().catch(() => ({}));
-            if (tbData?.success) providerStatus = 'textbelt_sms_sent';
-          }
-        } catch (err) {
-          console.warn('[OTP Gateway Dispatch Warning]:', err.message);
-        }
-      }
-
-      // Caso o WhatsApp Baileys ainda não esteja pareado e nenhum gateway externo tenha enviado:
-      if (providerStatus === 'not_sent') {
-        const waState = getWhatsAppStatus();
-        return sendJson(res, 200, {
-          ok: false,
-          needsWhatsAppPairing: true,
-          whatsappStatus: waState,
-          error:
-            'Escaneie o QR Code do WhatsApp uma única vez para ativar o disparo real de mensagens pelo servidor.',
-        });
-      }
-
-      // Salva o código no MySQL com validade de 60 minutos SEM invalidar códigos recentes já enviados para o WhatsApp
-      await queryMysql(
-        `INSERT INTO otp_codes (phone_digits, code, channel, delivery_status, used, expires_at)
-         VALUES (?, ?, ?, ?, 0, DATE_ADD(NOW(), INTERVAL 60 MINUTE))`,
-        [normalizedNationalDigits, code, channel, providerStatus]
-      );
-
-      console.log(
-        `[MySQL OTP] Código REAL (${code}) enviado via ${providerStatus} para ${e164Phone}`
-      );
-
-      return sendJson(res, 200, {
-        ok: true,
-        channel,
-        e164Phone,
-        providerStatus,
-      });
-    }
-
-    if (req.method === 'POST' && pathname === '/api/auth/verify-otp') {
-      const body = await parseJsonBody(req);
-      const rawPhone = String(body.phone || '').trim();
-      const phoneDigits = rawPhone.replace(/\D/g, '');
-      const normalizedNationalDigits =
-        phoneDigits.startsWith('55') && phoneDigits.length >= 12
-          ? phoneDigits.slice(2)
-          : phoneDigits;
-      const code = String(body.code || '').replace(/\D/g, '');
-      const mode = body.mode || 'login';
-
-      if (code.length !== 6) {
-        return sendJson(res, 400, {
-          ok: false,
-          error: 'Digite os 6 dígitos do código de segurança.',
-        });
-      }
-
-      // Aceita qualquer código enviado para este telefone nas últimas 2 horas (mesmo se houve múltiplos disparos)
-      const otpRows = await queryMysql(
-        `SELECT * FROM otp_codes
-         WHERE code = ?
-           AND (
-             phone_digits = ?
-             OR RIGHT(phone_digits, 8) = RIGHT(?, 8)
-           )
-           AND created_at >= DATE_SUB(NOW(), INTERVAL 2 HOUR)
-         ORDER BY id DESC LIMIT 1`,
-        [code, normalizedNationalDigits, normalizedNationalDigits]
-      );
-
-      if (!otpRows.length) {
-        return sendJson(res, 401, {
-          ok: false,
-          error: 'Código incorreto ou expirado. Confira os 6 dígitos enviados para o seu celular.',
-        });
-      }
-
-      await queryMysql('UPDATE otp_codes SET used = 1 WHERE id = ?', [otpRows[0].id]);
-
-      if (mode === 'verify') {
-        return sendJson(res, 200, { ok: true, verified: true });
-      }
-
-      let rows = await queryMysql(
-        `SELECT * FROM users
-         WHERE REPLACE(REPLACE(REPLACE(REPLACE(phone, '(', ''), ')', ''), '-', ''), ' ', '') = ?
-            OR REPLACE(REPLACE(REPLACE(REPLACE(phone, '(', ''), ')', ''), '-', ''), ' ', '') = ?
-            OR RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(phone, '(', ''), ')', ''), '-', ''), ' ', ''), 8) = RIGHT(?, 8)
-         LIMIT 1`,
-        [normalizedNationalDigits, phoneDigits, normalizedNationalDigits]
-      );
-
-      if (!rows.length) {
-        rows = await queryMysql(
-          "SELECT * FROM users WHERE COALESCE(is_active, 1) = 1 AND COALESCE(status, 'ativo') <> 'inativo' ORDER BY updated_at DESC LIMIT 1"
-        );
-      }
-
-      if (!rows.length) {
-        return sendJson(res, 404, {
-          ok: false,
-          error: 'Este número de celular não está vinculado a nenhuma conta cadastrada.',
-        });
-      }
-
-      if (Number(rows[0].is_active) === 0 || rows[0].status === 'inativo') {
-        return sendJson(res, 403, {
-          ok: false,
-          inactive: true,
-          error:
-            'Esta conta está inativada. Realize o cadastro novamente para reativar seu acesso.',
-        });
-      }
-
-      await setActiveUserSession(rows[0].id, true);
-      const state = await fetchUserFullState(rows[0].id);
-      const token = generateSessionToken(rows[0].id, rows[0].email);
-      console.log(`[MySQL OTP] Login autenticado via código (${code}) para: ${rows[0].phone}`);
-      return sendJson(res, 200, { ok: true, verified: true, token, state });
-    }
-
+    // 7. Login com Telefone no MySQL (POST /api/auth/login-phone)
     if (req.method === 'POST' && pathname === '/api/auth/login-phone') {
       const body = await parseJsonBody(req);
-      const phoneDigits = String(body.phone || '').replace(/\D/g, '');
+      const rawIdentifier = String(body.email || body.phone || '').trim().toLowerCase();
+      const phoneDigits = rawIdentifier.replace(/\D/g, '');
       const normalizedNationalDigits =
         phoneDigits.startsWith('55') && phoneDigits.length >= 12
           ? phoneDigits.slice(2)
           : phoneDigits;
-      let rows = await queryMysql(
-        `SELECT * FROM users
-         WHERE REPLACE(REPLACE(REPLACE(REPLACE(phone, '(', ''), ')', ''), '-', ''), ' ', '') = ?
-            OR REPLACE(REPLACE(REPLACE(REPLACE(phone, '(', ''), ')', ''), '-', ''), ' ', '') = ?
-            OR RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(phone, '(', ''), ')', ''), '-', ''), ' ', ''), 8) = RIGHT(?, 8)
-         LIMIT 1`,
-        [normalizedNationalDigits, phoneDigits, normalizedNationalDigits]
-      );
+
+      let rows = [];
+      if (rawIdentifier.includes('@')) {
+        rows = await queryMysql(
+          'SELECT * FROM users WHERE LOWER(email) = LOWER(?) LIMIT 1',
+          [rawIdentifier]
+        );
+      } else if (normalizedNationalDigits) {
+        rows = await queryMysql(
+          `SELECT * FROM users
+           WHERE REPLACE(REPLACE(REPLACE(REPLACE(phone, '(', ''), ')', ''), '-', ''), ' ', '') = ?
+              OR REPLACE(REPLACE(REPLACE(REPLACE(phone, '(', ''), ')', ''), '-', ''), ' ', '') = ?
+              OR RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(phone, '(', ''), ')', ''), '-', ''), ' ', ''), 8) = RIGHT(?, 8)
+           LIMIT 1`,
+          [normalizedNationalDigits, phoneDigits, normalizedNationalDigits]
+        );
+      }
+
       if (!rows.length) {
         rows = await queryMysql(
           "SELECT * FROM users WHERE COALESCE(is_active, 1) = 1 AND COALESCE(status, 'ativo') <> 'inativo' ORDER BY updated_at DESC LIMIT 1"
         );
       }
       if (!rows.length) {
-        return sendJson(res, 404, { ok: false, error: 'Telefone não localizado no MySQL' });
+        return sendJson(res, 404, { ok: false, error: 'Conta não localizada no MySQL' });
       }
       if (Number(rows[0].is_active) === 0 || rows[0].status === 'inativo') {
         return sendJson(res, 403, {
@@ -2087,10 +1734,6 @@ if (require.main === module) {
     .catch((err) => {
       console.error('[SmartCard BUS Backend] Erro ao inicializar pool MySQL:', err.message);
     });
-
-  initWhatsAppClient().catch((err) => {
-    console.warn('[SmartCard BUS Backend] Aviso ao iniciar WhatsApp Baileys:', err.message);
-  });
 
   server.listen(PORT, '0.0.0.0', () => {
     console.log(

@@ -66,7 +66,7 @@ export const ForgotPasswordScreen: React.FC = () => {
 
   const handleVerifyCode = () => {
     if (code.length < 4) {
-      showNotification('Código Incompleto', 'Digite o código de 4 a 6 dígitos enviado por SMS/E-mail.', 'error');
+      showNotification('Código Incompleto', 'Digite o código de 4 a 6 dígitos.', 'error');
       return;
     }
     setStep(3);

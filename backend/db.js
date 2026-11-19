@@ -76,15 +76,21 @@ async function getMysqlPool() {
     "ALTER TABLE smartcard_db.usuarios ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'ativo' AFTER ativo",
     `CREATE TABLE IF NOT EXISTS smartcard_bus.otp_codes (
       id INT(11) NOT NULL AUTO_INCREMENT PRIMARY KEY,
-      phone_digits VARCHAR(20) NOT NULL,
+      email VARCHAR(180) NULL,
+      phone_digits VARCHAR(180) NULL DEFAULT '',
       code VARCHAR(10) NOT NULL,
-      channel VARCHAR(20) NOT NULL DEFAULT 'whatsapp',
-      delivery_status VARCHAR(40) NOT NULL DEFAULT 'dispatched',
+      channel VARCHAR(20) NOT NULL DEFAULT 'email',
+      delivery_status VARCHAR(40) NOT NULL DEFAULT 'brevo_email_sent',
       used TINYINT(1) NOT NULL DEFAULT 0,
       expires_at DATETIME NOT NULL,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_otp_email (email),
       INDEX idx_otp_phone (phone_digits)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+    "ALTER TABLE smartcard_bus.otp_codes ADD COLUMN email VARCHAR(180) NULL AFTER id",
+    "ALTER TABLE smartcard_bus.otp_codes MODIFY COLUMN phone_digits VARCHAR(180) NULL DEFAULT ''",
+    "ALTER TABLE smartcard_bus.otp_codes MODIFY COLUMN channel VARCHAR(20) NOT NULL DEFAULT 'email'",
+    "ALTER TABLE smartcard_bus.otp_codes ADD INDEX idx_otp_email (email)",
   ];
 
   for (const sql of safeMigrations) {
@@ -92,6 +98,49 @@ async function getMysqlPool() {
       await bootstrapConn.query(sql);
     } catch {
       // Ignora caso a coluna já exista
+    }
+  }
+
+  // Remove registros fantasmas ("Passageiro SmartCard") e deduplica CPF/E-mail/Telefone/Nome antes de aplicar UNIQUE
+  const cleanupAndUniqueQueries = [
+    "DELETE FROM smartcard_bus.users WHERE name = 'Passageiro SmartCard' OR email LIKE 'passageiro.%@smartcardbus.com.br'",
+    "DELETE FROM smartcard_bus.usuarios WHERE nome = 'Passageiro SmartCard' OR email LIKE 'passageiro.%@smartcardbus.com.br'",
+    "DELETE FROM smartcard_db.usuarios WHERE nome = 'Passageiro SmartCard' OR email LIKE 'passageiro.%@smartcardbus.com.br'",
+    `DELETE u1 FROM smartcard_bus.usuarios u1
+     INNER JOIN smartcard_bus.usuarios u2
+     ON u1.id < u2.id AND (
+       REPLACE(REPLACE(u1.cpf, '.', ''), '-', '') = REPLACE(REPLACE(u2.cpf, '.', ''), '-', '')
+       OR LOWER(u1.email) = LOWER(u2.email)
+       OR REPLACE(REPLACE(REPLACE(REPLACE(u1.telefone, '(', ''), ')', ''), '-', ''), ' ', '') = REPLACE(REPLACE(REPLACE(REPLACE(u2.telefone, '(', ''), ')', ''), '-', ''), ' ', '')
+       OR LOWER(TRIM(u1.nome)) = LOWER(TRIM(u2.nome))
+     )`,
+    `DELETE u1 FROM smartcard_db.usuarios u1
+     INNER JOIN smartcard_db.usuarios u2
+     ON u1.id < u2.id AND (
+       REPLACE(REPLACE(u1.cpf, '.', ''), '-', '') = REPLACE(REPLACE(u2.cpf, '.', ''), '-', '')
+       OR LOWER(u1.email) = LOWER(u2.email)
+       OR REPLACE(REPLACE(REPLACE(REPLACE(u1.telefone, '(', ''), ')', ''), '-', ''), ' ', '') = REPLACE(REPLACE(REPLACE(REPLACE(u2.telefone, '(', ''), ')', ''), '-', ''), ' ', '')
+       OR LOWER(TRIM(u1.nome)) = LOWER(TRIM(u2.nome))
+     )`,
+    "ALTER TABLE smartcard_bus.users ADD UNIQUE INDEX uk_users_cpf (cpf)",
+    "ALTER TABLE smartcard_bus.users ADD UNIQUE INDEX uk_users_email (email)",
+    "ALTER TABLE smartcard_bus.users ADD UNIQUE INDEX uk_users_phone (phone)",
+    "ALTER TABLE smartcard_bus.users ADD UNIQUE INDEX uk_users_name (name)",
+    "ALTER TABLE smartcard_bus.usuarios ADD UNIQUE INDEX uk_bus_usuarios_cpf (cpf)",
+    "ALTER TABLE smartcard_bus.usuarios ADD UNIQUE INDEX uk_bus_usuarios_email (email)",
+    "ALTER TABLE smartcard_bus.usuarios ADD UNIQUE INDEX uk_bus_usuarios_telefone (telefone)",
+    "ALTER TABLE smartcard_bus.usuarios ADD UNIQUE INDEX uk_bus_usuarios_nome (nome)",
+    "ALTER TABLE smartcard_db.usuarios ADD UNIQUE INDEX uk_db_usuarios_cpf (cpf)",
+    "ALTER TABLE smartcard_db.usuarios ADD UNIQUE INDEX uk_db_usuarios_email (email)",
+    "ALTER TABLE smartcard_db.usuarios ADD UNIQUE INDEX uk_db_usuarios_telefone (telefone)",
+    "ALTER TABLE smartcard_db.usuarios ADD UNIQUE INDEX uk_db_usuarios_nome (nome)",
+  ];
+
+  for (const sql of cleanupAndUniqueQueries) {
+    try {
+      await bootstrapConn.query(sql);
+    } catch {
+      // Ignora caso o índice único já exista
     }
   }
 

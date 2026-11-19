@@ -395,22 +395,6 @@ export const ProfileScreen: React.FC = () => {
           </View>
           <MaterialIcons name="chevron-right" size={20} color={themeColors.outline} />
         </TouchableOpacity>
-
-        <View style={styles.menuDivider} />
-
-        <TouchableOpacity
-          style={styles.menuItem}
-          onPress={() => setCurrentScreen('smsVerification')}
-        >
-          <View style={[styles.menuIconBox, { backgroundColor: themeColors.surfaceContainerHighest }]}>
-            <MaterialIcons name="lock-clock" size={20} color={themeColors.primary} />
-          </View>
-          <View style={styles.menuTextBox}>
-            <Text style={styles.menuTitle}>Acesso por Código SMS / WhatsApp</Text>
-            <Text style={styles.menuSubtitle}>Autenticação rápida em dois fatores</Text>
-          </View>
-          <MaterialIcons name="chevron-right" size={20} color={themeColors.outline} />
-        </TouchableOpacity>
       </View>
 
       {/* Transit Preferences Section */}

@@ -12,10 +12,10 @@ USE smartcard_bus;
 -- 1. Tabela de Usuários (Passageiros, Fiscais e Administradores)
 CREATE TABLE IF NOT EXISTS users (
   id VARCHAR(64) PRIMARY KEY,
-  name VARCHAR(150) NOT NULL,
+  name VARCHAR(150) NOT NULL UNIQUE,
   cpf VARCHAR(14) NOT NULL UNIQUE,
   email VARCHAR(180) NOT NULL UNIQUE,
-  phone VARCHAR(20) NOT NULL,
+  phone VARCHAR(20) NOT NULL UNIQUE,
   birth_date VARCHAR(20) NULL,
   password_hash VARCHAR(255) NOT NULL,
   avatar_uri LONGTEXT NULL,
@@ -40,10 +40,10 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS usuarios (
   id INT(11) NOT NULL AUTO_INCREMENT PRIMARY KEY,
   user_id VARCHAR(64) NULL UNIQUE,
-  nome VARCHAR(150) NOT NULL,
-  cpf VARCHAR(20) NULL,
+  nome VARCHAR(150) NOT NULL UNIQUE,
+  cpf VARCHAR(20) NULL UNIQUE,
   email VARCHAR(180) NOT NULL UNIQUE,
-  telefone VARCHAR(30) NULL,
+  telefone VARCHAR(30) NULL UNIQUE,
   data_nascimento VARCHAR(20) NULL,
   senha VARCHAR(255) NOT NULL,
   saldo DECIMAL(10, 2) NULL DEFAULT 42.50,
@@ -191,16 +191,18 @@ CREATE TABLE IF NOT EXISTS mercado_pago_payments (
   INDEX idx_mp_payments_mp_id (mp_payment_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 11. Tabela de Códigos de Verificação OTP (SMS e WhatsApp)
+-- 11. Tabela de Códigos de Verificação OTP por E-mail (Brevo Transactional Email)
 CREATE TABLE IF NOT EXISTS otp_codes (
   id INT(11) NOT NULL AUTO_INCREMENT PRIMARY KEY,
-  phone_digits VARCHAR(20) NOT NULL,
+  email VARCHAR(180) NULL,
+  phone_digits VARCHAR(180) NULL DEFAULT '',
   code VARCHAR(10) NOT NULL,
-  channel VARCHAR(20) NOT NULL DEFAULT 'whatsapp',
-  delivery_status VARCHAR(40) NOT NULL DEFAULT 'dispatched',
+  channel VARCHAR(20) NOT NULL DEFAULT 'email',
+  delivery_status VARCHAR(40) NOT NULL DEFAULT 'brevo_email_sent',
   used TINYINT(1) NOT NULL DEFAULT 0,
   expires_at DATETIME NOT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_otp_email (email),
   INDEX idx_otp_phone (phone_digits)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

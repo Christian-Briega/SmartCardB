@@ -63,7 +63,7 @@ const isUnderMinimumAge = (birthDate: Date): boolean => {
 
 export const RegisterScreen: React.FC = () => {
   const {
-    register,
+    registerAsync,
     setCurrentScreen,
     setTermsModalOpen,
     setPrivacyModalOpen,
@@ -159,7 +159,7 @@ export const RegisterScreen: React.FC = () => {
     handleBirthDateChange(`${day}/${month}/${year}`);
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     const cleanName = sanitizeInput(fullName);
     const cleanEmail = sanitizeInput(email);
     const cleanCpf = sanitizeInput(cpf);
@@ -219,7 +219,26 @@ export const RegisterScreen: React.FC = () => {
       return;
     }
 
-    register(cleanName, cleanCpf, cleanEmail, cleanPhone, password, whatsappAlerts, birthDate);
+    const result = await registerAsync(
+      cleanName,
+      cleanCpf,
+      cleanEmail,
+      cleanPhone,
+      password,
+      whatsappAlerts,
+      birthDate
+    );
+
+    if (!result.ok) {
+      showNotification(
+        'Dados Pessoais Já Cadastrados',
+        result.error ||
+          'Este CPF, e-mail, celular ou nome já pertence a outra conta registrada no banco de dados.',
+        'error'
+      );
+      return;
+    }
+
     showNotification(
       'Cadastro Concluído',
       'Sua conta foi criada com sucesso. Entre com seus dados de acesso.',

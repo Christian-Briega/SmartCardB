@@ -153,11 +153,43 @@ export const mysqlApiService = {
     birthDate?: string;
     password: string;
     whatsappAlerts: boolean;
-  }): Promise<{ ok: boolean; user?: User & { id: string }; state?: MysqlUserFullState } | null> {
-    return apiRequest('/auth/register', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
+  }): Promise<{
+    ok: boolean;
+    field?: string;
+    error?: string;
+    user?: User & { id: string };
+    state?: MysqlUserFullState;
+  } | null> {
+    if (typeof fetch === 'undefined') return null;
+    const baseUrls = getCandidateBaseUrls();
+    for (const baseUrl of baseUrls) {
+      try {
+        const response = await fetch(`${baseUrl}/auth/register`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Security-Protocol': 'Anti-Gravidade-v1',
+          },
+          body: JSON.stringify(payload),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (response.ok && data?.ok) {
+          return data;
+        }
+        if (response.status === 409 || response.status === 400) {
+          return {
+            ok: false,
+            field: data?.field,
+            error:
+              data?.error ||
+              'Já existe uma conta cadastrada com estes dados pessoais (CPF, e-mail, celular ou nome).',
+          };
+        }
+      } catch {
+        // Tenta próximo host candidato
+      }
+    }
+    return null;
   },
 
   async loginUser(
@@ -202,43 +234,41 @@ export const mysqlApiService = {
     return null;
   },
 
-  async getWhatsAppStatus(): Promise<{
+  async getBrevoEmailStatus(): Promise<{
     ok: boolean;
-    status: string;
-    connected: boolean;
-    qrCodeDataUrl?: string | null;
-    connectedPhone?: string | null;
-    hasGatewayKey?: boolean;
+    configured: boolean;
+    senderEmail?: string | null;
   } | null> {
-    return apiRequest('/whatsapp/status', { method: 'GET' });
+    return apiRequest('/email/status', { method: 'GET' });
   },
 
-  async saveWhatsAppConfig(callmebotApiKey: string): Promise<boolean> {
-    const res = await apiRequest<{ ok: boolean }>('/whatsapp/config', {
+  async saveBrevoEmailConfig(payload: {
+    brevoApiKey: string;
+    senderEmail?: string;
+  }): Promise<boolean> {
+    const res = await apiRequest<{ ok: boolean }>('/email/config', {
       method: 'POST',
-      body: JSON.stringify({ callmebotApiKey }),
+      body: JSON.stringify(payload),
     });
     return Boolean(res?.ok);
   },
 
   async sendOtpCode(payload: {
-    phone: string;
-    channel: 'sms' | 'whatsapp';
-    mode?: 'login' | 'verify';
-    callmebotApiKey?: string;
+    email?: string;
+    identifier?: string;
+    phone?: string;
+    channel?: 'email' | 'sms' | 'whatsapp';
+    mode?: 'login' | 'verify' | 'reset_password';
+    brevoApiKey?: string;
+    senderEmail?: string;
+    forceNew?: boolean;
   }): Promise<{
     ok: boolean;
-    channel?: 'sms' | 'whatsapp';
-    e164Phone?: string;
+    email?: string;
+    channel?: string;
     providerStatus?: string;
-    needsWhatsAppPairing?: boolean;
-    whatsappStatus?: {
-      status: string;
-      connected: boolean;
-      qrCodeDataUrl?: string | null;
-      connectedPhone?: string | null;
-      lastError?: string | null;
-    };
+    senderEmail?: string | null;
+    needsBrevoKey?: boolean;
     inactive?: boolean;
     error?: string;
   }> {
@@ -258,11 +288,10 @@ export const mysqlApiService = {
           if (response.ok && data?.ok) {
             return data;
           }
-          if (response.ok && data?.needsWhatsAppPairing) {
+          if (response.ok && (data?.needsBrevoKey || data?.ok === false)) {
             return {
               ok: false,
-              needsWhatsAppPairing: true,
-              whatsappStatus: data.whatsappStatus,
+              needsBrevoKey: Boolean(data.needsBrevoKey),
               error: data.error,
             };
           }
@@ -278,7 +307,7 @@ export const mysqlApiService = {
           if (response.status === 400 || response.status === 404) {
             return {
               ok: false,
-              error: data?.error || 'Não foi possível enviar o código para este número.',
+              error: data?.error || 'Não foi possível enviar o código para este e-mail.',
             };
           }
         } catch {
@@ -289,14 +318,16 @@ export const mysqlApiService = {
 
     return {
       ok: false,
-      error: 'Não foi possível conectar ao servidor para disparar a mensagem.',
+      error: 'Não foi possível conectar ao servidor para enviar o e-mail via Brevo.',
     };
   },
 
   async verifyOtpCode(payload: {
-    phone: string;
+    email?: string;
+    identifier?: string;
+    phone?: string;
     code: string;
-    mode?: 'login' | 'verify';
+    mode?: 'login' | 'verify' | 'reset_password';
   }): Promise<{
     ok: boolean;
     verified?: boolean;
@@ -334,7 +365,7 @@ export const mysqlApiService = {
               ok: false,
               error:
                 data?.error ||
-                'Código incorreto ou expirado. Confira os 6 dígitos enviados para o seu celular.',
+                'Código incorreto ou expirado. Confira os 6 dígitos enviados para o seu e-mail.',
             };
           }
         } catch {

@@ -34,7 +34,6 @@ import { LoginScreen } from './src/screens/LoginScreen';
 import { WelcomeScreen } from './src/screens/WelcomeScreen';
 import { RegisterScreen } from './src/screens/RegisterScreen';
 import { ForgotPasswordScreen } from './src/screens/ForgotPasswordScreen';
-import { SmsVerificationScreen } from './src/screens/SmsVerificationScreen';
 import { BiometricsEnrollScreen } from './src/screens/BiometricsEnrollScreen';
 import { ProfileScreen } from './src/screens/ProfileScreen';
 import { SecuritySettingsScreen } from './src/screens/SecuritySettingsScreen';
@@ -54,7 +53,6 @@ const SCREEN_TITLES: Record<string, string> = {
   welcome: 'Bem-vindo ao SmartCard BUS',
   register: 'Criar Conta Digital',
   forgotPassword: 'Recuperar Senha',
-  smsVerification: 'Validação em Duas Etapas',
   biometricsEnroll: 'Biometria & Face ID',
   profile: 'Minha Conta & Nível de Acesso',
   security: 'Segurança & Criptografia',
@@ -91,8 +89,6 @@ const MainNavigator: React.FC = () => {
       authScreenComponent = <RegisterScreen />;
     } else if (currentScreen === 'forgotPassword') {
       authScreenComponent = <ForgotPasswordScreen />;
-    } else if (currentScreen === 'smsVerification') {
-      authScreenComponent = <SmsVerificationScreen />;
     }
 
     return (
@@ -136,8 +132,6 @@ const MainNavigator: React.FC = () => {
         return <SecuritySettingsScreen />;
       case 'biometricsEnroll':
         return <BiometricsEnrollScreen />;
-      case 'smsVerification':
-        return <SmsVerificationScreen />;
       case 'help':
         return <HelpSupportScreen />;
       case 'passSelection':
