@@ -1,3 +1,14 @@
+/**
+ * SmartCard BUS - Pool de Conexão com Banco de Dados MySQL / MariaDB / TiDB Cloud
+ * Gerencia conexões seguras com TLS/SSL, fuso horário UTC e migrações compatíveis.
+ */
+
+const fs = require('fs');
+const path = require('path');
+
+const host = process.env.MYSQL_HOST || '127.0.0.1';
+const isRemoteHost = host !== '127.0.0.1' && host !== 'localhost';
+
 const MYSQL_CONFIG = {
   host,
   port: Number(process.env.MYSQL_PORT || 3306),
