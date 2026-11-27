@@ -1,24 +1,104 @@
-/**
- * SmartCard BUS - Pool de Conexão com Banco de Dados MySQL
- * Gerencia conexões seguras com MySQL 8.0+ e inicialização automática das tabelas.
- */
-
-const fs = require('fs');
-const path = require('path');
-
 const MYSQL_CONFIG = {
-  host: process.env.MYSQL_HOST || '127.0.0.1',
+  host,
   port: Number(process.env.MYSQL_PORT || 3306),
   user: process.env.MYSQL_USER || 'root',
   password: process.env.MYSQL_PASSWORD || '',
   database: process.env.MYSQL_DATABASE || 'smartcard_bus',
+  timezone: 'Z',
+  dateStrings: ['DATE'],
+  ssl: isRemoteHost
+    ? {
+        minVersion: 'TLSv1.2',
+        rejectUnauthorized: false,
+      }
+    : undefined,
   waitForConnections: true,
-  connectionLimit: 10,
+  connectionLimit: isRemoteHost ? 5 : 10,
   queueLimit: 0,
   multipleStatements: true,
 };
 
 let pool = null;
+
+/**
+ * Aplica schema.sql e migrações seguras de alinhamento estrutural
+ * sem remover homônimos nem recriar índices duplicados.
+ */
+async function runBootstrapMigrations() {
+  const mysql = require('mysql2/promise');
+
+  const bootstrapConn = await mysql.createConnection({
+    host: MYSQL_CONFIG.host,
+    port: MYSQL_CONFIG.port,
+    user: MYSQL_CONFIG.user,
+    password: MYSQL_CONFIG.password,
+    timezone: 'Z',
+    ssl: MYSQL_CONFIG.ssl,
+    multipleStatements: true,
+  });
+
+  try {
+    const schemaPath = path.join(__dirname, 'database', 'schema.sql');
+    if (fs.existsSync(schemaPath)) {
+      const schemaSql = fs.readFileSync(schemaPath, 'utf8');
+      await bootstrapConn.query(schemaSql);
+    }
+
+    // Migrações seguras de alinhamento com o schema otimizado (sem UNIQUE em name/nome)
+    const safeMigrations = [
+      // Remove índices redundantes e restrição UNIQUE indevida no nome completo
+      'ALTER TABLE smartcard_bus.users DROP INDEX uk_users_name',
+      'ALTER TABLE smartcard_bus.users DROP INDEX idx_users_cpf',
+      'ALTER TABLE smartcard_bus.users DROP INDEX idx_users_email',
+      'ALTER TABLE smartcard_bus.users DROP INDEX idx_users_phone',
+      'ALTER TABLE smartcard_bus.users ADD INDEX idx_users_name (name)',
+
+      // Garante colunas e tipos padronizados em users
+      'ALTER TABLE smartcard_bus.users ADD COLUMN birth_date DATE NULL AFTER phone',
+      'ALTER TABLE smartcard_bus.users MODIFY COLUMN birth_date DATE NULL',
+      'ALTER TABLE smartcard_bus.users ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1 AFTER has_completed_pass_selection',
+      "ALTER TABLE smartcard_bus.users ADD COLUMN status ENUM('ativo','inativo','bloqueado','pendente') NOT NULL DEFAULT 'ativo' AFTER is_active",
+
+      // Garante tipos padronizados em pass_cards e family_members
+      "ALTER TABLE smartcard_bus.pass_cards MODIFY COLUMN type VARCHAR(32) NOT NULL DEFAULT 'comum'",
+      'ALTER TABLE smartcard_bus.pass_cards MODIFY COLUMN validity DATE NULL',
+      'ALTER TABLE smartcard_bus.pass_cards MODIFY COLUMN rides_count INT UNSIGNED NOT NULL DEFAULT 0',
+      'ALTER TABLE smartcard_bus.family_members MODIFY COLUMN birth_date DATE NOT NULL',
+
+      // Garante unicidade de transações externas Mercado Pago e cartões por usuário
+      'ALTER TABLE smartcard_bus.mercado_pago_payments ADD UNIQUE INDEX uk_mp_payments_mp_id (mp_payment_id)',
+      'ALTER TABLE smartcard_bus.pass_cards ADD UNIQUE INDEX uk_pass_cards_user_number (user_id, card_number)',
+
+      // Mantém smartcard_bus.usuarios como VIEW sempre atualizada
+      'DROP TABLE IF EXISTS smartcard_bus.usuarios',
+      `CREATE OR REPLACE VIEW smartcard_bus.usuarios AS
+       SELECT
+         ROW_NUMBER() OVER (ORDER BY u.created_at ASC) AS id,
+         u.id AS user_id,
+         u.name AS nome,
+         u.cpf,
+         u.email,
+         u.phone AS telefone,
+         u.birth_date AS data_nascimento,
+         u.password_hash AS senha,
+         COALESCE((SELECT SUM(c.balance) FROM smartcard_bus.pass_cards c WHERE c.user_id = u.id), 0.00) AS saldo,
+         u.is_active AS ativo,
+         u.status,
+         u.created_at AS criado_em
+       FROM smartcard_bus.users u`,
+    ];
+
+    for (const sql of safeMigrations) {
+      try {
+        await bootstrapConn.query(sql);
+      } catch {
+        // Ignora caso o índice/coluna já esteja no estado esperado
+      }
+    }
+  } finally {
+    await bootstrapConn.end().catch(() => {});
+  }
+}
 
 async function getMysqlPool() {
   if (pool) return pool;
@@ -32,158 +112,9 @@ async function getMysqlPool() {
     );
   }
 
-  // Cria o banco de dados caso ainda não exista e aplica o schema.sql
-  const bootstrapConn = await mysql.createConnection({
-    host: MYSQL_CONFIG.host,
-    port: MYSQL_CONFIG.port,
-    user: MYSQL_CONFIG.user,
-    password: MYSQL_CONFIG.password,
-    multipleStatements: true,
-  });
-
-  const schemaPath = path.join(__dirname, 'database', 'schema.sql');
-  if (fs.existsSync(schemaPath)) {
-    const schemaSql = fs.readFileSync(schemaPath, 'utf8');
-    await bootstrapConn.query(schemaSql);
+  if (!process.env.VERCEL && !isRemoteHost) {
+    await runBootstrapMigrations();
   }
-
-  // Migrações seguras para garantir todas as colunas e tipos em smartcard_bus e smartcard_db
-  const safeMigrations = [
-    "ALTER TABLE smartcard_bus.users ADD COLUMN birth_date VARCHAR(20) NULL AFTER phone",
-    "ALTER TABLE smartcard_bus.users ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1 AFTER has_completed_pass_selection",
-    "ALTER TABLE smartcard_bus.users ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'ativo' AFTER is_active",
-    "ALTER TABLE smartcard_bus.usuarios ADD COLUMN ativo TINYINT(1) NOT NULL DEFAULT 1 AFTER saldo",
-    "ALTER TABLE smartcard_bus.usuarios ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'ativo' AFTER ativo",
-    "ALTER TABLE smartcard_bus.pass_cards MODIFY COLUMN type VARCHAR(32) NOT NULL DEFAULT 'comum'",
-    `CREATE DATABASE IF NOT EXISTS smartcard_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
-    `CREATE TABLE IF NOT EXISTS smartcard_db.usuarios (
-      id INT(11) NOT NULL AUTO_INCREMENT PRIMARY KEY,
-      nome VARCHAR(100) NOT NULL,
-      cpf VARCHAR(20) NULL,
-      email VARCHAR(100) NOT NULL UNIQUE,
-      telefone VARCHAR(30) NULL,
-      data_nascimento VARCHAR(20) NULL,
-      senha VARCHAR(255) NOT NULL,
-      criado_em TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      saldo INT(11) NULL DEFAULT 42,
-      ativo TINYINT(1) NOT NULL DEFAULT 1,
-      status VARCHAR(20) NOT NULL DEFAULT 'ativo'
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
-    "ALTER TABLE smartcard_db.usuarios ADD COLUMN cpf VARCHAR(20) NULL AFTER nome",
-    "ALTER TABLE smartcard_db.usuarios ADD COLUMN telefone VARCHAR(30) NULL AFTER email",
-    "ALTER TABLE smartcard_db.usuarios ADD COLUMN data_nascimento VARCHAR(20) NULL AFTER telefone",
-    "ALTER TABLE smartcard_db.usuarios ADD COLUMN ativo TINYINT(1) NOT NULL DEFAULT 1 AFTER saldo",
-    "ALTER TABLE smartcard_db.usuarios ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'ativo' AFTER ativo",
-    `CREATE TABLE IF NOT EXISTS smartcard_bus.otp_codes (
-      id INT(11) NOT NULL AUTO_INCREMENT PRIMARY KEY,
-      email VARCHAR(180) NULL,
-      phone_digits VARCHAR(180) NULL DEFAULT '',
-      code VARCHAR(10) NOT NULL,
-      channel VARCHAR(20) NOT NULL DEFAULT 'email',
-      delivery_status VARCHAR(40) NOT NULL DEFAULT 'brevo_email_sent',
-      used TINYINT(1) NOT NULL DEFAULT 0,
-      expires_at DATETIME NOT NULL,
-      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      INDEX idx_otp_email (email),
-      INDEX idx_otp_phone (phone_digits)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
-    "ALTER TABLE smartcard_bus.otp_codes ADD COLUMN email VARCHAR(180) NULL AFTER id",
-    "ALTER TABLE smartcard_bus.otp_codes MODIFY COLUMN phone_digits VARCHAR(180) NULL DEFAULT ''",
-    "ALTER TABLE smartcard_bus.otp_codes MODIFY COLUMN channel VARCHAR(20) NOT NULL DEFAULT 'email'",
-    "ALTER TABLE smartcard_bus.otp_codes ADD INDEX idx_otp_email (email)",
-  ];
-
-  for (const sql of safeMigrations) {
-    try {
-      await bootstrapConn.query(sql);
-    } catch {
-      // Ignora caso a coluna já exista
-    }
-  }
-
-  // Remove registros fantasmas ("Passageiro SmartCard") e deduplica CPF/E-mail/Telefone/Nome antes de aplicar UNIQUE
-  const cleanupAndUniqueQueries = [
-    "DELETE FROM smartcard_bus.users WHERE name = 'Passageiro SmartCard' OR email LIKE 'passageiro.%@smartcardbus.com.br'",
-    "DELETE FROM smartcard_bus.usuarios WHERE nome = 'Passageiro SmartCard' OR email LIKE 'passageiro.%@smartcardbus.com.br'",
-    "DELETE FROM smartcard_db.usuarios WHERE nome = 'Passageiro SmartCard' OR email LIKE 'passageiro.%@smartcardbus.com.br'",
-    `DELETE u1 FROM smartcard_bus.usuarios u1
-     INNER JOIN smartcard_bus.usuarios u2
-     ON u1.id < u2.id AND (
-       REPLACE(REPLACE(u1.cpf, '.', ''), '-', '') = REPLACE(REPLACE(u2.cpf, '.', ''), '-', '')
-       OR LOWER(u1.email) = LOWER(u2.email)
-       OR REPLACE(REPLACE(REPLACE(REPLACE(u1.telefone, '(', ''), ')', ''), '-', ''), ' ', '') = REPLACE(REPLACE(REPLACE(REPLACE(u2.telefone, '(', ''), ')', ''), '-', ''), ' ', '')
-       OR LOWER(TRIM(u1.nome)) = LOWER(TRIM(u2.nome))
-     )`,
-    `DELETE u1 FROM smartcard_db.usuarios u1
-     INNER JOIN smartcard_db.usuarios u2
-     ON u1.id < u2.id AND (
-       REPLACE(REPLACE(u1.cpf, '.', ''), '-', '') = REPLACE(REPLACE(u2.cpf, '.', ''), '-', '')
-       OR LOWER(u1.email) = LOWER(u2.email)
-       OR REPLACE(REPLACE(REPLACE(REPLACE(u1.telefone, '(', ''), ')', ''), '-', ''), ' ', '') = REPLACE(REPLACE(REPLACE(REPLACE(u2.telefone, '(', ''), ')', ''), '-', ''), ' ', '')
-       OR LOWER(TRIM(u1.nome)) = LOWER(TRIM(u2.nome))
-     )`,
-    "ALTER TABLE smartcard_bus.users ADD UNIQUE INDEX uk_users_cpf (cpf)",
-    "ALTER TABLE smartcard_bus.users ADD UNIQUE INDEX uk_users_email (email)",
-    "ALTER TABLE smartcard_bus.users ADD UNIQUE INDEX uk_users_phone (phone)",
-    "ALTER TABLE smartcard_bus.users ADD UNIQUE INDEX uk_users_name (name)",
-    "ALTER TABLE smartcard_bus.usuarios ADD UNIQUE INDEX uk_bus_usuarios_cpf (cpf)",
-    "ALTER TABLE smartcard_bus.usuarios ADD UNIQUE INDEX uk_bus_usuarios_email (email)",
-    "ALTER TABLE smartcard_bus.usuarios ADD UNIQUE INDEX uk_bus_usuarios_telefone (telefone)",
-    "ALTER TABLE smartcard_bus.usuarios ADD UNIQUE INDEX uk_bus_usuarios_nome (nome)",
-    "ALTER TABLE smartcard_db.usuarios ADD UNIQUE INDEX uk_db_usuarios_cpf (cpf)",
-    "ALTER TABLE smartcard_db.usuarios ADD UNIQUE INDEX uk_db_usuarios_email (email)",
-    "ALTER TABLE smartcard_db.usuarios ADD UNIQUE INDEX uk_db_usuarios_telefone (telefone)",
-    "ALTER TABLE smartcard_db.usuarios ADD UNIQUE INDEX uk_db_usuarios_nome (nome)",
-  ];
-
-  for (const sql of cleanupAndUniqueQueries) {
-    try {
-      await bootstrapConn.query(sql);
-    } catch {
-      // Ignora caso o índice único já exista
-    }
-  }
-
-  // Sincroniza usuários já existentes em smartcard_bus.users para smartcard_bus.usuarios e smartcard_db.usuarios
-  try {
-    await bootstrapConn.query(`
-      INSERT INTO smartcard_bus.usuarios (user_id, nome, cpf, email, telefone, data_nascimento, senha, saldo, ativo, status, criado_em)
-      SELECT u.id, u.name, u.cpf, u.email, u.phone, u.birth_date, u.password_hash,
-             COALESCE((SELECT SUM(c.balance) FROM smartcard_bus.pass_cards c WHERE c.user_id = u.id), 0),
-             COALESCE(u.is_active, 1),
-             COALESCE(u.status, CASE WHEN u.is_active = 0 THEN 'inativo' ELSE 'ativo' END),
-             u.created_at
-      FROM smartcard_bus.users u
-      ON DUPLICATE KEY UPDATE
-        nome = VALUES(nome),
-        cpf = VALUES(cpf),
-        telefone = VALUES(telefone),
-        data_nascimento = COALESCE(VALUES(data_nascimento), smartcard_bus.usuarios.data_nascimento),
-        senha = VALUES(senha),
-        ativo = VALUES(ativo),
-        status = VALUES(status)
-    `);
-    await bootstrapConn.query(`
-      INSERT INTO smartcard_db.usuarios (nome, cpf, email, telefone, data_nascimento, senha, ativo, status, criado_em)
-      SELECT u.name, u.cpf, u.email, u.phone, u.birth_date, u.password_hash,
-             COALESCE(u.is_active, 1),
-             COALESCE(u.status, CASE WHEN u.is_active = 0 THEN 'inativo' ELSE 'ativo' END),
-             u.created_at
-      FROM smartcard_bus.users u
-      ON DUPLICATE KEY UPDATE
-        nome = VALUES(nome),
-        cpf = VALUES(cpf),
-        telefone = VALUES(telefone),
-        data_nascimento = COALESCE(VALUES(data_nascimento), smartcard_db.usuarios.data_nascimento),
-        senha = VALUES(senha),
-        ativo = VALUES(ativo),
-        status = VALUES(status)
-    `);
-  } catch {
-    // Ignora falha silenciosa de sincronização inicial
-  }
-
-  await bootstrapConn.end();
 
   pool = mysql.createPool(MYSQL_CONFIG);
   return pool;
@@ -210,5 +141,5 @@ module.exports = {
   getMysqlPool,
   queryMysql,
   closeMysqlPool,
+  runBootstrapMigrations,
 };
-

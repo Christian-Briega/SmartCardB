@@ -1,7 +1,8 @@
 /**
- * SmartCard BUS - Servidor Backend REST API com Banco de Dados MySQL
+ * SmartCard BUS - Servidor Backend REST API com Banco de Dados MySQL / MariaDB
  *
- * Persiste todas as operações do aplicativo no banco MySQL `smartcard_bus`.
+ * Persiste todas as operações do aplicativo no banco `smartcard_bus` com
+ * validação de autenticação, integridade transacional e normalização de dados.
  */
 
 const http = require('http');
@@ -12,6 +13,10 @@ const PORT = Number(process.env.PORT || process.env.API_PORT || 3001);
 const FARE = 4.4;
 const ACTIVE_SESSION_KEY = 'smartcard_active_user_session';
 const JWT_SECRET = process.env.JWT_SECRET || 'smartcard_bus_bank_grade_hmac_secret_2026';
+
+// ============================================================================
+// Utilitários de Criptografia, Token e Normalização
+// ============================================================================
 
 function hashPassword(password) {
   return crypto.createHash('sha256').update(`${password}:smartcard_bus_salt`).digest('hex');
@@ -43,6 +48,64 @@ function verifySessionToken(token) {
   } catch {
     return null;
   }
+}
+
+function getBearerAuth(req) {
+  const authHeader = String(req.headers?.authorization || '').trim();
+  if (!authHeader) return { provided: false, valid: false, decoded: null };
+  const match = /^Bearer\s+(.+)$/i.exec(authHeader);
+  if (!match) return { provided: true, valid: false, decoded: null };
+  const decoded = verifySessionToken(match[1].trim());
+  return { provided: true, valid: Boolean(decoded), decoded };
+}
+
+function normalizeCpf(rawCpf) {
+  const clean = String(rawCpf || '').trim();
+  const digits = clean.replace(/\D/g, '');
+  if (digits.length === 11) {
+    return digits.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4');
+  }
+  return clean;
+}
+
+function normalizePhone(rawPhone) {
+  const clean = String(rawPhone || '').trim();
+  let digits = clean.replace(/\D/g, '');
+  if (digits.startsWith('55') && (digits.length === 12 || digits.length === 13)) {
+    digits = digits.slice(2);
+  }
+  if (digits.length === 11) {
+    return digits.replace(/(\d{2})(\d{5})(\d{4})/, '($1) $2-$3');
+  }
+  if (digits.length === 10) {
+    return digits.replace(/(\d{2})(\d{4})(\d{4})/, '($1) $2-$3');
+  }
+  return clean;
+}
+
+/**
+ * Converte datas de 'DD/MM/YYYY', 'YYYY-MM-DD' ou ISO-8601 para 'YYYY-MM-DD' (DATE SQL).
+ */
+function normalizeDate(rawDate) {
+  if (!rawDate) return null;
+  const str = String(rawDate).trim();
+  if (!str) return null;
+
+  const brMatch = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(str);
+  if (brMatch) {
+    return `${brMatch[3]}-${brMatch[2]}-${brMatch[1]}`;
+  }
+
+  const isoMatch = /^(\d{4}-\d{2}-\d{2})/.exec(str);
+  if (isoMatch) {
+    return isoMatch[1];
+  }
+
+  const parsed = new Date(str);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toISOString().slice(0, 10);
+  }
+  return null;
 }
 
 function sendJson(res, statusCode, payload) {
@@ -77,16 +140,18 @@ function parseJsonBody(req) {
   });
 }
 
+// ============================================================================
+// Resolução Segura de Usuário (Sem Vazamento entre Contas)
+// ============================================================================
+
 /**
- * Resolve o `id` real da tabela `users` a partir de id, CPF ou e-mail.
- * Se não existir (ex: modo demonstração ou primeiro uso), cria o registro em `users`
- * garantindo que todas as chaves estrangeiras (FK) do MySQL funcionem sem erro.
+ * Localiza um usuário existente estritamente por id, CPF ou e-mail.
+ * Nunca utiliza fallback para sessão global ou último usuário cadastrado.
  */
-async function resolveOrCreateUserId(identifier, fallback = {}) {
+async function resolveExistingUserId(identifier, fallback = {}) {
   const raw = String(identifier || '').trim();
   const digits = raw.replace(/\D/g, '');
-  const fbCpf = String(fallback.cpf || '').trim();
-  const fbCpfDigits = fbCpf.replace(/\D/g, '');
+  const fbCpfDigits = String(fallback.cpf || '').replace(/\D/g, '');
   const fbEmail = String(fallback.email || '').trim().toLowerCase();
 
   if (raw && raw !== 'default_user') {
@@ -117,67 +182,37 @@ async function resolveOrCreateUserId(identifier, fallback = {}) {
     }
   }
 
-  // Se o identificador não foi localizado diretamente, utiliza a sessão ativa ou o último usuário ativo
-  const activeSession = await queryMysql(
-    'SELECT user_id FROM user_sessions WHERE session_key = ? AND user_id IS NOT NULL LIMIT 1',
-    [ACTIVE_SESSION_KEY]
-  );
-  if (activeSession.length > 0 && activeSession[0].user_id) {
-    const checkUser = await queryMysql('SELECT id FROM users WHERE id = ? LIMIT 1', [
-      activeSession[0].user_id,
-    ]);
-    if (checkUser.length > 0) {
-      return checkUser[0].id;
-    }
+  return null;
+}
+
+/**
+ * Valida o Bearer token (quando enviado) e resolve o ID exato do usuário alvo.
+ * Impede que um usuário autenticado manipule dados de outro userId.
+ */
+async function resolveAuthorizedUserId(req, explicitIdentifier, fallback = {}) {
+  const auth = getBearerAuth(req);
+  if (auth.provided && !auth.valid) {
+    const err = new Error('Token de sessão inválido ou expirado.');
+    err.statusCode = 401;
+    throw err;
   }
 
-  const anyUser = await queryMysql('SELECT id FROM users ORDER BY updated_at DESC LIMIT 1');
-  if (anyUser.length > 0) {
-    return anyUser[0].id;
+  const candidateId = explicitIdentifier || auth.decoded?.sub || '';
+  const resolvedId = await resolveExistingUserId(candidateId, fallback);
+
+  if (!resolvedId) {
+    const err = new Error('Usuário não autenticado ou não encontrado.');
+    err.statusCode = auth.valid ? 404 : 401;
+    throw err;
   }
 
-  // Somente cria usuário de demonstração caso o banco esteja 100% vazio
-  const stamp = String(Date.now());
-  const newUserId = raw && raw.startsWith('usr_') ? raw : `usr_${stamp}`;
-  const fallbackCpf =
-    fbCpf ||
-    (digits.length === 11
-      ? digits.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4')
-      : `${stamp.slice(-9)}00`.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4'));
-  const fallbackEmail =
-    fbEmail || (raw.includes('@') ? raw.toLowerCase() : `demo.${stamp}@smartcardbus.com.br`);
-  const fallbackName = fallback.name || `Passageiro Demo ${stamp.slice(-4)}`;
-  const fallbackPhone =
-    fallback.phone || `(11) 9${stamp.slice(-8, -4)}-${stamp.slice(-4)}`;
-  const fallbackBirthDate = fallback.birthDate || null;
-  const fallbackPassHash = fallback.password
-    ? hashPassword(fallback.password)
-    : hashPassword('demo123');
+  if (auth.valid && auth.decoded.sub !== resolvedId) {
+    const err = new Error('Acesso negado: você não tem permissão para alterar outra conta.');
+    err.statusCode = 403;
+    throw err;
+  }
 
-  await queryMysql(
-    `INSERT INTO users (id, name, cpf, email, phone, birth_date, password_hash, whatsapp_alerts, has_completed_pass_selection)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
-     ON DUPLICATE KEY UPDATE
-       updated_at = CURRENT_TIMESTAMP`,
-    [
-      newUserId,
-      fallbackName,
-      fallbackCpf,
-      fallbackEmail,
-      fallbackPhone,
-      fallbackBirthDate,
-      fallbackPassHash,
-      fallback.whatsappAlerts ? 1 : 0,
-    ]
-  );
-
-  const created = await queryMysql(
-    'SELECT id FROM users WHERE id = ? OR cpf = ? OR LOWER(email) = LOWER(?) LIMIT 1',
-    [newUserId, fallbackCpf, fallbackEmail]
-  );
-  const createdId = created[0].id;
-  await syncUserMirrorTables(createdId);
-  return createdId;
+  return resolvedId;
 }
 
 async function setActiveUserSession(userId, isLoggedIn = true) {
@@ -197,10 +232,10 @@ async function setActiveUserSession(userId, isLoggedIn = true) {
 }
 
 /**
- * Sincroniza os dados do usuário e seu saldo consolidado nas tabelas `usuarios`
- * tanto em `smartcard_bus.usuarios` quanto em `smartcard_db.usuarios`.
+ * Sincroniza opcionalmente a base externa `smartcard_db.usuarios` caso exista.
+ * A tabela `smartcard_bus.usuarios` é uma VIEW nativa e não precisa de sync manual.
  */
-async function syncUserMirrorTables(userId) {
+async function syncExternalMirrorTable(userId) {
   try {
     const userRows = await queryMysql('SELECT * FROM users WHERE id = ? LIMIT 1', [userId]);
     if (!userRows.length) return;
@@ -211,48 +246,15 @@ async function syncUserMirrorTables(userId) {
       [userId]
     );
     const totalBalance = balanceRows.length ? Number(balanceRows[0].total_balance) : 0;
-    const isActiveFlag =
-      u.is_active === undefined || u.is_active === null ? 1 : Number(u.is_active) ? 1 : 0;
+    const isActiveFlag = Number(u.is_active) === 0 ? 0 : 1;
     const statusText = u.status || (isActiveFlag === 0 ? 'inativo' : 'ativo');
     const uCpfDigits = String(u.cpf || '').replace(/\D/g, '');
-    const uPhoneDigits = String(u.phone || '').replace(/\D/g, '');
-
-    // Remove registros espelho antigos do mesmo titular antes de sincronizar para respeitar UNIQUE em nome, cpf, email e telefone
-    await queryMysql(
-      `DELETE FROM smartcard_bus.usuarios
-       WHERE user_id = ?
-          OR REPLACE(REPLACE(cpf, '.', ''), '-', '') = ?
-          OR LOWER(email) = LOWER(?)
-          OR REPLACE(REPLACE(REPLACE(REPLACE(telefone, '(', ''), ')', ''), '-', ''), ' ', '') = ?
-          OR LOWER(TRIM(nome)) = LOWER(TRIM(?))`,
-      [u.id, uCpfDigits, u.email, uPhoneDigits, u.name]
-    );
-
-    await queryMysql(
-      `INSERT INTO smartcard_bus.usuarios (user_id, nome, cpf, email, telefone, data_nascimento, senha, saldo, ativo, status, criado_em)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        u.id,
-        u.name,
-        u.cpf,
-        u.email,
-        u.phone,
-        u.birth_date || null,
-        u.password_hash,
-        totalBalance,
-        isActiveFlag,
-        statusText,
-        u.created_at || new Date(),
-      ]
-    );
 
     await queryMysql(
       `DELETE FROM smartcard_db.usuarios
-       WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ?
-          OR LOWER(email) = LOWER(?)
-          OR REPLACE(REPLACE(REPLACE(REPLACE(telefone, '(', ''), ')', ''), '-', ''), ' ', '') = ?
-          OR LOWER(TRIM(nome)) = LOWER(TRIM(?))`,
-      [uCpfDigits, u.email, uPhoneDigits, u.name]
+       WHERE (CHAR_LENGTH(?) = 11 AND REPLACE(REPLACE(cpf, '.', ''), '-', '') = ?)
+          OR LOWER(email) = LOWER(?)`,
+      [uCpfDigits, uCpfDigits, u.email]
     );
 
     await queryMysql(
@@ -271,10 +273,14 @@ async function syncUserMirrorTables(userId) {
         u.created_at || new Date(),
       ]
     );
-  } catch (err) {
-    console.warn('[MySQL Mirror Sync]:', err.message);
+  } catch {
+    // Ignora silenciosamente caso o schema secundário `smartcard_db` não esteja presente
   }
 }
+
+// ============================================================================
+// Mapeadores de Resposta
+// ============================================================================
 
 function mapUserRow(row) {
   if (!row) return null;
@@ -333,7 +339,9 @@ function mapTransactionRow(row) {
 }
 
 async function fetchUserFullState(userId) {
-  const resolvedId = await resolveOrCreateUserId(userId);
+  const resolvedId = await resolveExistingUserId(userId);
+  if (!resolvedId) return null;
+
   const users = await queryMysql('SELECT * FROM users WHERE id = ? LIMIT 1', [resolvedId]);
   if (!users.length) return null;
 
@@ -432,6 +440,10 @@ async function fetchUserFullState(userId) {
   };
 }
 
+// ============================================================================
+// Servidor HTTP / Rotas REST API
+// ============================================================================
+
 const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') {
     return sendJson(res, 200, { ok: true });
@@ -452,8 +464,21 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
-    // 2. Recuperar Sessão Ativa ao abrir/recarregar o App (GET /api/session/current)
+    // 2. Recuperar Sessão Ativa (GET /api/session/current)
+    // Nunca expõe dados do último usuário cadastrado quando não há sessão autenticada
     if (req.method === 'GET' && pathname === '/api/session/current') {
+      const auth = getBearerAuth(req);
+      if (auth.valid && auth.decoded?.sub) {
+        const state = await fetchUserFullState(auth.decoded.sub);
+        if (state && state.user && state.user.isActive !== false && state.user.status === 'ativo') {
+          return sendJson(res, 200, {
+            ok: true,
+            isLoggedIn: true,
+            state,
+          });
+        }
+      }
+
       const sessionRows = await queryMysql(
         'SELECT user_id, payload FROM user_sessions WHERE session_key = ? LIMIT 1',
         [ACTIVE_SESSION_KEY]
@@ -467,27 +492,21 @@ const server = http.createServer(async (req, res) => {
           parsedPayload = {};
         }
 
-        const state = await fetchUserFullState(sessionRows[0].user_id);
-        if (state && state.user && state.user.isActive !== false && state.user.status !== 'inativo') {
-          return sendJson(res, 200, {
-            ok: true,
-            isLoggedIn: Boolean(parsedPayload.isLoggedIn),
-            state,
-          });
+        if (parsedPayload.isLoggedIn === true) {
+          const state = await fetchUserFullState(sessionRows[0].user_id);
+          if (
+            state &&
+            state.user &&
+            state.user.isActive !== false &&
+            state.user.status === 'ativo'
+          ) {
+            return sendJson(res, 200, {
+              ok: true,
+              isLoggedIn: true,
+              state,
+            });
+          }
         }
-      }
-
-      // Caso não haja sessão ativa, verifica se há usuário ativo recém-cadastrado
-      const latestUser = await queryMysql(
-        "SELECT id FROM users WHERE COALESCE(is_active, 1) = 1 AND COALESCE(status, 'ativo') <> 'inativo' ORDER BY updated_at DESC LIMIT 1"
-      );
-      if (latestUser.length > 0) {
-        const state = await fetchUserFullState(latestUser[0].id);
-        return sendJson(res, 200, {
-          ok: true,
-          isLoggedIn: false,
-          state,
-        });
       }
 
       return sendJson(res, 200, { ok: true, isLoggedIn: false, state: null });
@@ -523,7 +542,7 @@ const server = http.createServer(async (req, res) => {
         const body = await parseJsonBody(req);
         let validUserId = null;
         if (body.userId) {
-          validUserId = await resolveOrCreateUserId(body.userId);
+          validUserId = await resolveExistingUserId(body.userId);
         }
         await queryMysql(
           `INSERT INTO user_sessions (session_key, user_id, payload)
@@ -539,40 +558,36 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    // 5. Cadastro de Usuário no MySQL com Validação Estrita de Unicidade de Dados Pessoais (POST /api/auth/register)
+    // 5. Cadastro de Usuário com Unicidade em CPF, E-mail e Telefone (Permite Homônimos)
     if (req.method === 'POST' && pathname === '/api/auth/register') {
       const body = await parseJsonBody(req);
-      const passwordHash = hashPassword(body.password || '');
       const cleanName = String(body.name || '').trim();
       const cleanEmail = String(body.email || '').trim().toLowerCase();
-      const cleanCpf = String(body.cpf || '').trim();
-      const cpfDigits = cleanCpf.replace(/\D/g, '');
-      const formattedCpf =
-        cpfDigits.length === 11
-          ? cpfDigits.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4')
-          : cleanCpf;
-      const cleanPhone = String(body.phone || '').trim();
-      const phoneDigits = cleanPhone.replace(/\D/g, '');
-      const formattedPhone =
-        phoneDigits.length === 11
-          ? phoneDigits.replace(/(\d{2})(\d{5})(\d{4})/, '($1) $2-$3')
-          : phoneDigits.length === 10
-            ? phoneDigits.replace(/(\d{2})(\d{4})(\d{4})/, '($1) $2-$3')
-            : cleanPhone;
-      const cleanBirthDate = body.birthDate ? String(body.birthDate).trim() : null;
+      const formattedCpf = normalizeCpf(body.cpf);
+      const cpfDigits = formattedCpf.replace(/\D/g, '');
+      const formattedPhone = normalizePhone(body.phone);
+      const phoneDigits = formattedPhone.replace(/\D/g, '');
+      const cleanBirthDate = normalizeDate(body.birthDate);
 
-      // Consulta se qualquer dado pessoal (CPF, E-mail, Celular ou Nome Completo) já existe no banco de dados
+      if (!cleanName || cpfDigits.length !== 11 || !cleanEmail || phoneDigits.length < 10 || !body.password) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: 'Preencha corretamente nome completo, CPF válido, e-mail, celular e senha.',
+        });
+      }
+
+      const passwordHash = hashPassword(body.password);
+
+      // Verifica unicidade estritamente em identificadores únicos (CPF, e-mail e celular)
       const existingMatches = await queryMysql(
         `SELECT * FROM users
          WHERE cpf = ?
-            OR (CHAR_LENGTH(?) = 11 AND REPLACE(REPLACE(cpf, '.', ''), '-', '') = ?)
+            OR REPLACE(REPLACE(cpf, '.', ''), '-', '') = ?
             OR LOWER(TRIM(email)) = LOWER(?)
-            OR (CHAR_LENGTH(?) >= 10 AND REPLACE(REPLACE(REPLACE(REPLACE(phone, '(', ''), ')', ''), '-', ''), ' ', '') = ?)
-            OR LOWER(TRIM(name)) = LOWER(?)`,
-        [formattedCpf, cpfDigits, cpfDigits, cleanEmail, phoneDigits, phoneDigits, cleanName]
+            OR REPLACE(REPLACE(REPLACE(REPLACE(phone, '(', ''), ')', ''), '-', ''), ' ', '') = ?`,
+        [formattedCpf, cpfDigits, cleanEmail, phoneDigits]
       );
 
-      // Verifica conflitos com contas ATIVAS: nenhum dado pessoal pode se repetir em outra conta
       const activeConflicts = existingMatches.filter(
         (row) => Number(row.is_active) !== 0 && row.status !== 'inativo'
       );
@@ -598,7 +613,7 @@ const server = http.createServer(async (req, res) => {
             ok: false,
             field: 'email',
             error:
-              'Este e-mail já está cadastrado em outra conta. Todos os dados pessoais devem ser únicos.',
+              'Este e-mail já está cadastrado em outra conta. Informe um e-mail exclusivo.',
           });
         }
 
@@ -613,18 +628,6 @@ const server = http.createServer(async (req, res) => {
               'Este número de celular/WhatsApp já está cadastrado em outra conta. Informe um número exclusivo.',
           });
         }
-
-        const nameConflict = activeConflicts.find(
-          (r) => String(r.name || '').trim().toLowerCase() === cleanName.toLowerCase()
-        );
-        if (nameConflict) {
-          return sendJson(res, 409, {
-            ok: false,
-            field: 'name',
-            error:
-              'Já existe uma conta cadastrada com este nome completo no sistema.',
-          });
-        }
       }
 
       const requestedId =
@@ -632,12 +635,11 @@ const server = http.createServer(async (req, res) => {
       let targetUserId = requestedId;
 
       if (existingMatches.length > 0) {
-        // Caso os dados coincidam com registros inativos diferentes, bloqueia por conflito de unicidade
         if (existingMatches.length > 1) {
           return sendJson(res, 409, {
             ok: false,
             error:
-              'Os dados informados (CPF, e-mail, telefone ou nome) conflitam com cadastros distintos existentes no banco de dados.',
+              'Os dados informados (CPF, e-mail ou telefone) conflitam com cadastros distintos existentes no banco de dados.',
           });
         }
 
@@ -647,11 +649,11 @@ const server = http.createServer(async (req, res) => {
           return sendJson(res, 409, {
             ok: false,
             error:
-              'O e-mail, telefone ou nome informado já pertence a outro CPF registrado no banco de dados.',
+              'O e-mail ou telefone informado já pertence a outro CPF registrado no banco de dados.',
           });
         }
 
-        // Reativa a conta que estava inativada do próprio titular do CPF
+        // Reativa a conta inativada do mesmo titular do CPF
         targetUserId = inactiveRow.id;
         await queryMysql(
           `UPDATE users SET
@@ -700,15 +702,18 @@ const server = http.createServer(async (req, res) => {
         targetUserId,
       ]);
       const savedUser = mapUserRow(createdRows[0]);
+      const token = generateSessionToken(savedUser.id, savedUser.email);
       await setActiveUserSession(savedUser.id, false);
-      await syncUserMirrorTables(savedUser.id);
+      await syncExternalMirrorTable(savedUser.id);
       const state = await fetchUserFullState(savedUser.id);
+
       console.log(
-        `[MySQL] Usuário único cadastrado e salvo em smartcard_bus/smartcard_db: ${savedUser.name} (${savedUser.cpf} | ${savedUser.email})`
+        `[MySQL] Usuário cadastrado com sucesso: ${savedUser.name} (${savedUser.cpf} | ${savedUser.email})`
       );
 
       return sendJson(res, 201, {
         ok: true,
+        token,
         user: savedUser,
         state,
       });
@@ -742,6 +747,13 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
+      if (userCheckRows.length > 0 && userCheckRows[0].status === 'bloqueado') {
+        return sendJson(res, 403, {
+          ok: false,
+          error: 'Esta conta está bloqueada. Entre em contato com o suporte.',
+        });
+      }
+
       const rows = userCheckRows.filter((r) => r.password_hash === passwordHash);
 
       if (!rows.length) {
@@ -756,6 +768,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // 7. Login com Telefone no MySQL (POST /api/auth/login-phone)
+    // Removido fallback inseguro que logava no último usuário do banco
     if (req.method === 'POST' && pathname === '/api/auth/login-phone') {
       const body = await parseJsonBody(req);
       const rawIdentifier = String(body.email || body.phone || '').trim().toLowerCase();
@@ -771,25 +784,25 @@ const server = http.createServer(async (req, res) => {
           'SELECT * FROM users WHERE LOWER(email) = LOWER(?) LIMIT 1',
           [rawIdentifier]
         );
-      } else if (normalizedNationalDigits) {
+      } else if (normalizedNationalDigits.length >= 10) {
         rows = await queryMysql(
           `SELECT * FROM users
            WHERE REPLACE(REPLACE(REPLACE(REPLACE(phone, '(', ''), ')', ''), '-', ''), ' ', '') = ?
               OR REPLACE(REPLACE(REPLACE(REPLACE(phone, '(', ''), ')', ''), '-', ''), ' ', '') = ?
-              OR RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(phone, '(', ''), ')', ''), '-', ''), ' ', ''), 8) = RIGHT(?, 8)
            LIMIT 1`,
-          [normalizedNationalDigits, phoneDigits, normalizedNationalDigits]
+          [normalizedNationalDigits, phoneDigits]
         );
+      } else {
+        return sendJson(res, 400, {
+          ok: false,
+          error: 'Informe um número de celular com DDD ou e-mail válido.',
+        });
       }
 
       if (!rows.length) {
-        rows = await queryMysql(
-          "SELECT * FROM users WHERE COALESCE(is_active, 1) = 1 AND COALESCE(status, 'ativo') <> 'inativo' ORDER BY updated_at DESC LIMIT 1"
-        );
-      }
-      if (!rows.length) {
         return sendJson(res, 404, { ok: false, error: 'Conta não localizada no MySQL' });
       }
+
       if (Number(rows[0].is_active) === 0 || rows[0].status === 'inativo') {
         return sendJson(res, 403, {
           ok: false,
@@ -798,6 +811,7 @@ const server = http.createServer(async (req, res) => {
             'Esta conta está inativada. Realize o cadastro novamente para reativar seu acesso.',
         });
       }
+
       await setActiveUserSession(rows[0].id, true);
       const state = await fetchUserFullState(rows[0].id);
       const token = generateSessionToken(rows[0].id, rows[0].email);
@@ -807,16 +821,22 @@ const server = http.createServer(async (req, res) => {
     // 8. Modo Demonstração Persistido no MySQL (POST /api/auth/demo)
     if (req.method === 'POST' && pathname === '/api/auth/demo') {
       const body = await parseJsonBody(req);
-      const userId = await resolveOrCreateUserId(body.userId || 'usr_demo_smartcard', {
-        name: body.name || 'Passageiro Demo',
-        cpf: '123.456.789-00',
-        email: 'demo@smartcardbus.com.br',
-        phone: '(11)99999-0000',
-      });
+      const demoUserId = 'usr_demo_smartcard';
+
+      const existingDemo = await queryMysql('SELECT id FROM users WHERE id = ? LIMIT 1', [
+        demoUserId,
+      ]);
+      if (!existingDemo.length) {
+        await queryMysql(
+          `INSERT INTO users (id, name, cpf, email, phone, password_hash, has_completed_pass_selection, is_active, status)
+           VALUES (?, ?, '123.456.789-00', 'demo@smartcardbus.com.br', '(11) 99999-0000', ?, 1, 1, 'ativo')`,
+          [demoUserId, body.name || 'Passageiro Demo', hashPassword('demo123')]
+        );
+      }
 
       const existingCards = await queryMysql(
         'SELECT id FROM pass_cards WHERE user_id = ? LIMIT 1',
-        [userId]
+        [demoUserId]
       );
       if (!existingCards.length && body.card) {
         const c = body.card;
@@ -828,13 +848,13 @@ const server = http.createServer(async (req, res) => {
            ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP`,
           [
             c.id || `card-demo-${Date.now()}`,
-            userId,
+            demoUserId,
             c.type || 'comum',
             c.title || 'Passe Comum',
             c.tag || 'TARIFA PADRÃO',
-            c.number || '1234',
-            Number(c.balance ?? 42.5),
-            Number(c.ridesCount ?? 9),
+            c.number ? String(c.number).trim() : '1234',
+            Math.max(0, Number(c.balance ?? 42.5)),
+            Math.max(0, Math.floor(Number(c.ridesCount ?? 9))),
             c.holder || 'PASSAGEIRO DEMO',
             colors[0],
             colors[1],
@@ -842,11 +862,14 @@ const server = http.createServer(async (req, res) => {
         );
       }
 
-      await queryMysql('UPDATE users SET has_completed_pass_selection = 1 WHERE id = ?', [userId]);
-      await setActiveUserSession(userId, true);
-      const state = await fetchUserFullState(userId);
-      console.log(`[MySQL] Sessão Demo persistida para usuário: ${userId}`);
-      return sendJson(res, 200, { ok: true, state });
+      await queryMysql('UPDATE users SET has_completed_pass_selection = 1 WHERE id = ?', [
+        demoUserId,
+      ]);
+      await setActiveUserSession(demoUserId, true);
+      const token = generateSessionToken(demoUserId, 'demo@smartcardbus.com.br');
+      const state = await fetchUserFullState(demoUserId);
+      console.log(`[MySQL] Sessão Demo persistida para usuário: ${demoUserId}`);
+      return sendJson(res, 200, { ok: true, token, state });
     }
 
     // 9. Autenticação Social Google / Apple (POST /api/auth/social)
@@ -857,35 +880,58 @@ const server = http.createServer(async (req, res) => {
       const cleanEmail = String(body.email || '').trim().toLowerCase();
       const cleanName = String(body.name || 'Passageiro SmartCard').trim();
 
+      if (!cleanEmail || !cleanEmail.includes('@')) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: 'E-mail da conta social inválido ou ausente.',
+        });
+      }
+
       let rows = await queryMysql(
         `SELECT * FROM users WHERE LOWER(email) = ? OR LOWER(${column}) = ? LIMIT 1`,
         [cleanEmail, cleanEmail]
       );
 
       if (!rows.length) {
-        const userId = `usr_${Date.now()}`;
-        const generatedCpf = `${String(Date.now()).slice(-9)}00`.replace(
+        const stamp = String(Date.now());
+        const userId = `usr_${stamp}`;
+        const generatedCpf = `${stamp.slice(-9)}00`.replace(
           /(\d{3})(\d{3})(\d{3})(\d{2})/,
           '$1.$2.$3-$4'
         );
+        const generatedPhone = `(11) 9${stamp.slice(-8, -4)}-${stamp.slice(-4)}`;
+
         await queryMysql(
-          `INSERT INTO users (id, name, cpf, email, phone, password_hash, has_completed_pass_selection, ${column})
-           VALUES (?, ?, ?, ?, '(11)99999-9999', ?, 1, ?)`,
-          [userId, cleanName, generatedCpf, cleanEmail, hashPassword(userId), cleanEmail]
+          `INSERT INTO users (id, name, cpf, email, phone, password_hash, has_completed_pass_selection, is_active, status, ${column})
+           VALUES (?, ?, ?, ?, ?, ?, 1, 1, 'ativo', ?)`,
+          [userId, cleanName, generatedCpf, cleanEmail, generatedPhone, hashPassword(userId), cleanEmail]
         );
         await queryMysql(
           `INSERT INTO pass_cards
              (id, user_id, type, title, tag, card_number, balance, rides_count, holder, is_blocked, color_start, color_end)
            VALUES (?, ?, 'comum', 'Passe Comum Urbano', 'BILHETE DIGITAL', ?, 25.00, 5, ?, 0, '#003ec8', '#0d53fc')
            ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP`,
-          [`card-social-${userId}`, userId, String(Math.floor(1000 + Math.random() * 9000)), cleanName.toUpperCase()]
+          [
+            `card-social-${userId}`,
+            userId,
+            String(Math.floor(1000 + Math.random() * 9000)),
+            cleanName.toUpperCase(),
+          ]
         );
         rows = await queryMysql('SELECT * FROM users WHERE id = ? LIMIT 1', [userId]);
       } else {
+        if (Number(rows[0].is_active) === 0 || rows[0].status === 'inativo') {
+          return sendJson(res, 403, {
+            ok: false,
+            inactive: true,
+            error:
+              'Esta conta está inativada. Realize o cadastro novamente para reativar seu acesso.',
+          });
+        }
         await queryMysql(`UPDATE users SET ${column} = ? WHERE id = ?`, [cleanEmail, rows[0].id]);
       }
 
-      await syncUserMirrorTables(rows[0].id);
+      await syncExternalMirrorTable(rows[0].id);
       await setActiveUserSession(rows[0].id, true);
       const state = await fetchUserFullState(rows[0].id);
       const token = generateSessionToken(rows[0].id, rows[0].email);
@@ -898,6 +944,15 @@ const server = http.createServer(async (req, res) => {
       const body = await parseJsonBody(req);
       const rawIdentifier = String(body.identifier || '').trim().toLowerCase();
       const digitsIdentifier = rawIdentifier.replace(/\D/g, '');
+      const newPassword = String(body.newPassword || '');
+
+      if (!rawIdentifier || newPassword.length < 4) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: 'Informe o identificador da conta e uma nova senha válida.',
+        });
+      }
+
       const rows = await queryMysql(
         `SELECT id FROM users
          WHERE LOWER(email) = ?
@@ -909,14 +964,14 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 404, { ok: false, error: 'Conta não encontrada no MySQL' });
       }
       await queryMysql('UPDATE users SET password_hash = ? WHERE id = ?', [
-        hashPassword(body.newPassword || ''),
+        hashPassword(newPassword),
         rows[0].id,
       ]);
-      await syncUserMirrorTables(rows[0].id);
+      await syncExternalMirrorTable(rows[0].id);
       return sendJson(res, 200, { ok: true });
     }
 
-    // 10b. Inativação de Conta com Confirmação de Senha (POST /api/users/inactivate-account ou /api/users/delete-account)
+    // 10b. Inativação de Conta com Confirmação de Senha
     if (
       req.method === 'POST' &&
       (pathname === '/api/users/inactivate-account' || pathname === '/api/users/delete-account')
@@ -930,12 +985,19 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
-      const rawUserId = String(body.userId || '').trim();
-      const rawCpf = String(body.cpf || '').trim();
-      const cpfDigits = rawCpf.replace(/\D/g, '');
+      const auth = getBearerAuth(req);
+      const rawUserId = String(body.userId || auth.decoded?.sub || '').trim();
+      const cpfDigits = String(body.cpf || '').replace(/\D/g, '');
       const rawEmail = String(body.email || '').trim().toLowerCase();
 
-      let userRows = await queryMysql(
+      if (!rawUserId && cpfDigits.length !== 11 && !rawEmail) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: 'Identificador da conta ausente.',
+        });
+      }
+
+      const userRows = await queryMysql(
         `SELECT * FROM users
          WHERE (? <> '' AND id = ?)
             OR (CHAR_LENGTH(?) = 11 AND REPLACE(REPLACE(cpf, '.', ''), '-', '') = ?)
@@ -945,18 +1007,6 @@ const server = http.createServer(async (req, res) => {
       );
 
       if (!userRows.length) {
-        const activeSession = await queryMysql(
-          'SELECT user_id FROM user_sessions WHERE session_key = ? AND user_id IS NOT NULL LIMIT 1',
-          [ACTIVE_SESSION_KEY]
-        );
-        if (activeSession.length > 0 && activeSession[0].user_id) {
-          userRows = await queryMysql('SELECT * FROM users WHERE id = ? LIMIT 1', [
-            activeSession[0].user_id,
-          ]);
-        }
-      }
-
-      if (!userRows.length) {
         return sendJson(res, 404, {
           ok: false,
           error: 'Conta não localizada no banco de dados.',
@@ -964,8 +1014,14 @@ const server = http.createServer(async (req, res) => {
       }
 
       const targetUser = userRows[0];
-      const providedHash = hashPassword(rawPassword);
-      if (targetUser.password_hash !== providedHash) {
+      if (auth.valid && auth.decoded.sub !== targetUser.id) {
+        return sendJson(res, 403, {
+          ok: false,
+          error: 'Acesso negado para inativar esta conta.',
+        });
+      }
+
+      if (targetUser.password_hash !== hashPassword(rawPassword)) {
         return sendJson(res, 401, {
           ok: false,
           error: 'Senha incorreta. Digite a senha correta da sua conta.',
@@ -973,60 +1029,23 @@ const server = http.createServer(async (req, res) => {
       }
 
       const targetId = targetUser.id;
-      const targetCpfDigits = String(targetUser.cpf || '').replace(/\D/g, '');
-      const targetEmail = String(targetUser.email || '').trim().toLowerCase();
-
-      // Inativa a conta na tabela principal smartcard_bus.users (exigindo novo cadastro para reativar)
       await queryMysql(
         `UPDATE users
          SET is_active = 0,
              status = 'inativo',
              has_completed_pass_selection = 0,
              updated_at = CURRENT_TIMESTAMP
-         WHERE id = ?
-            OR (CHAR_LENGTH(?) = 11 AND REPLACE(REPLACE(cpf, '.', ''), '-', '') = ?)
-            OR (? <> '' AND LOWER(email) = LOWER(?))`,
-        [targetId, targetCpfDigits, targetCpfDigits, targetEmail, targetEmail]
+         WHERE id = ?`,
+        [targetId]
       );
 
-      // Bloqueia temporariamente os cartões vinculados enquanto a conta estiver inativa
       await queryMysql('UPDATE pass_cards SET is_blocked = 1 WHERE user_id = ?', [targetId]);
-
-      // Encerra as sessões ativas no MySQL
       await queryMysql('DELETE FROM user_sessions WHERE user_id = ? OR session_key = ?', [
         targetId,
         ACTIVE_SESSION_KEY,
       ]);
 
-      // Atualiza as tabelas espelho em smartcard_bus.usuarios e smartcard_db.usuarios para ativo = 0, status = 'inativo'
-      try {
-        await queryMysql(
-          `UPDATE smartcard_bus.usuarios
-           SET ativo = 0,
-               status = 'inativo'
-           WHERE user_id = ?
-              OR (CHAR_LENGTH(?) = 11 AND REPLACE(REPLACE(cpf, '.', ''), '-', '') = ?)
-              OR (? <> '' AND LOWER(email) = LOWER(?))`,
-          [targetId, targetCpfDigits, targetCpfDigits, targetEmail, targetEmail]
-        );
-      } catch (e) {
-        console.warn('[MySQL Inactivate Mirror smartcard_bus.usuarios]:', e.message);
-      }
-
-      try {
-        await queryMysql(
-          `UPDATE smartcard_db.usuarios
-           SET ativo = 0,
-               status = 'inativo'
-           WHERE (CHAR_LENGTH(?) = 11 AND REPLACE(REPLACE(cpf, '.', ''), '-', '') = ?)
-              OR (? <> '' AND LOWER(email) = LOWER(?))`,
-          [targetCpfDigits, targetCpfDigits, targetEmail, targetEmail]
-        );
-      } catch (e) {
-        console.warn('[MySQL Inactivate Mirror smartcard_db.usuarios]:', e.message);
-      }
-
-      await syncUserMirrorTables(targetId);
+      await syncExternalMirrorTable(targetId);
 
       console.log(
         `[MySQL] Conta inativada no banco de dados (exige novo cadastro): ${targetUser.name} (${targetUser.email})`
@@ -1037,7 +1056,9 @@ const server = http.createServer(async (req, res) => {
     // 11. Estado Completo do Usuário (GET /api/users/:userId/state)
     const userStateMatch = /^\/api\/users\/([^/]+)\/state$/.exec(pathname);
     if (req.method === 'GET' && userStateMatch) {
-      const state = await fetchUserFullState(decodeURIComponent(userStateMatch[1]));
+      const requestedUserId = decodeURIComponent(userStateMatch[1]);
+      const resolvedUserId = await resolveAuthorizedUserId(req, requestedUserId);
+      const state = await fetchUserFullState(resolvedUserId);
       if (!state) return sendJson(res, 404, { ok: false, error: 'Usuário não encontrado' });
       return sendJson(res, 200, { ok: true, state });
     }
@@ -1045,7 +1066,8 @@ const server = http.createServer(async (req, res) => {
     // 12. Atualização de Perfil / Configurações (PATCH /api/users/:userId)
     const userPatchMatch = /^\/api\/users\/([^/]+)$/.exec(pathname);
     if (req.method === 'PATCH' && userPatchMatch) {
-      const resolvedUserId = await resolveOrCreateUserId(decodeURIComponent(userPatchMatch[1]));
+      const requestedUserId = decodeURIComponent(userPatchMatch[1]);
+      const resolvedUserId = await resolveAuthorizedUserId(req, requestedUserId);
       const body = await parseJsonBody(req);
 
       const currentRows = await queryMysql('SELECT * FROM users WHERE id = ? LIMIT 1', [
@@ -1056,11 +1078,18 @@ const server = http.createServer(async (req, res) => {
       }
       const cur = currentRows[0];
 
+      const nextPhone = body.phone !== undefined ? normalizePhone(body.phone) : cur.phone;
+      const nextEmail =
+        body.email !== undefined ? String(body.email).trim().toLowerCase() : cur.email;
+      const nextBirthDate =
+        body.birthDate !== undefined ? normalizeDate(body.birthDate) : cur.birth_date;
+
       await queryMysql(
         `UPDATE users SET
            name = ?,
            email = ?,
            phone = ?,
+           birth_date = ?,
            avatar_uri = ?,
            biometrics_enabled = ?,
            two_factor_enabled = ?,
@@ -1070,9 +1099,10 @@ const server = http.createServer(async (req, res) => {
            has_completed_pass_selection = ?
          WHERE id = ?`,
         [
-          body.name !== undefined ? body.name : cur.name,
-          body.email !== undefined ? body.email : cur.email,
-          body.phone !== undefined ? body.phone : cur.phone,
+          body.name !== undefined ? String(body.name).trim() : cur.name,
+          nextEmail,
+          nextPhone,
+          nextBirthDate,
           'avatarUri' in body ? body.avatarUri || null : cur.avatar_uri,
           body.biometricsEnabled !== undefined
             ? body.biometricsEnabled
@@ -1095,7 +1125,7 @@ const server = http.createServer(async (req, res) => {
           resolvedUserId,
         ]
       );
-      await syncUserMirrorTables(resolvedUserId);
+      await syncExternalMirrorTable(resolvedUserId);
       console.log(`[MySQL] Perfil atualizado para usuário: ${resolvedUserId}`);
       return sendJson(res, 200, { ok: true });
     }
@@ -1104,12 +1134,16 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && pathname === '/api/cards') {
       const body = await parseJsonBody(req);
       const cardData = body.card && typeof body.card === 'object' ? body.card : body;
-      const resolvedUserId = await resolveOrCreateUserId(body.userId, {
+      const resolvedUserId = await resolveAuthorizedUserId(req, body.userId, {
         name: cardData.holder,
       });
       const cardId = cardData.id || `card-${Date.now()}`;
       const colors = Array.isArray(cardData.colors) ? cardData.colors : ['#003ec8', '#0d53fc'];
       const cardTitle = cardData.title || 'Passe Geral Urbano';
+      const normalizedCardNumber = cardData.number ? String(cardData.number).trim() : null;
+      const normalizedValidity = normalizeDate(cardData.validity);
+      const safeBalance = Math.max(0, Number(cardData.balance || 0));
+      const safeRides = Math.max(0, Math.floor(Number(cardData.ridesCount || 0)));
 
       await queryMysql(
         `INSERT INTO pass_cards
@@ -1127,14 +1161,14 @@ const server = http.createServer(async (req, res) => {
           cardData.type || 'comum',
           cardTitle,
           cardData.tag || 'BILHETE DIGITAL',
-          cardData.number || '',
-          Number(cardData.balance || 0),
-          Number(cardData.ridesCount || 0),
+          normalizedCardNumber,
+          safeBalance,
+          safeRides,
           cardData.holder || 'PASSAGEIRO',
           cardData.isBlocked ? 1 : 0,
           colors[0],
           colors[1],
-          cardData.validity || null,
+          normalizedValidity,
           cardData.remainingQuota ?? null,
         ]
       );
@@ -1145,8 +1179,10 @@ const server = http.createServer(async (req, res) => {
         ]);
       }
 
-      await syncUserMirrorTables(resolvedUserId);
-      console.log(`[MySQL] Cartão de transporte salvo: ${cardId} (${cardTitle}) -> ${resolvedUserId}`);
+      await syncExternalMirrorTable(resolvedUserId);
+      console.log(
+        `[MySQL] Cartão de transporte salvo: ${cardId} (${cardTitle}) -> ${resolvedUserId}`
+      );
       return sendJson(res, 201, { ok: true, id: cardId, cardId, userId: resolvedUserId });
     }
 
@@ -1154,6 +1190,21 @@ const server = http.createServer(async (req, res) => {
     const cardBlockMatch = /^\/api\/cards\/([^/]+)\/block$/.exec(pathname);
     if (req.method === 'PATCH' && cardBlockMatch) {
       const cardId = decodeURIComponent(cardBlockMatch[1]);
+      const auth = getBearerAuth(req);
+      if (auth.provided && !auth.valid) {
+        return sendJson(res, 401, { ok: false, error: 'Token de sessão inválido ou expirado.' });
+      }
+
+      const cardRows = await queryMysql('SELECT id, user_id FROM pass_cards WHERE id = ? LIMIT 1', [
+        cardId,
+      ]);
+      if (!cardRows.length) {
+        return sendJson(res, 404, { ok: false, error: 'Cartão não encontrado.' });
+      }
+      if (auth.valid && auth.decoded.sub !== cardRows[0].user_id) {
+        return sendJson(res, 403, { ok: false, error: 'Acesso negado a este cartão.' });
+      }
+
       await queryMysql('UPDATE pass_cards SET is_blocked = NOT is_blocked WHERE id = ?', [cardId]);
       console.log(`[MySQL] Status de bloqueio alternado para o cartão: ${cardId}`);
       return sendJson(res, 200, { ok: true });
@@ -1164,8 +1215,16 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && cardRechargeMatch) {
       const cardId = decodeURIComponent(cardRechargeMatch[1]);
       const body = await parseJsonBody(req);
-      const resolvedUserId = await resolveOrCreateUserId(body.userId);
+      const resolvedUserId = await resolveAuthorizedUserId(req, body.userId);
       const amount = Number(body.amount || 0);
+
+      if (!Number.isFinite(amount) || amount <= 0) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: 'O valor da recarga deve ser maior que zero.',
+        });
+      }
+
       const payMethod = body.paymentMethod || body.method || 'Pix';
       const pool = await getMysqlPool();
       const conn = await pool.getConnection();
@@ -1173,16 +1232,15 @@ const server = http.createServer(async (req, res) => {
       try {
         await conn.beginTransaction();
 
-        // Garante que o cartão exista em pass_cards antes da recarga
         const [existingCard] = await conn.execute(
-          'SELECT id FROM pass_cards WHERE id = ? LIMIT 1',
+          'SELECT id, user_id FROM pass_cards WHERE id = ? LIMIT 1 FOR UPDATE',
           [cardId]
         );
         if (!existingCard.length) {
           await conn.execute(
             `INSERT INTO pass_cards
                (id, user_id, type, title, tag, card_number, balance, rides_count, holder, is_blocked, color_start, color_end)
-             VALUES (?, ?, 'comum', 'Passe Comum', 'BILHETE DIGITAL', '1234', 0, 0, 'PASSAGEIRO', 0, '#003ec8', '#0d53fc')`,
+             VALUES (?, ?, 'comum', 'Passe Comum', 'BILHETE DIGITAL', NULL, 0, 0, 'PASSAGEIRO', 0, '#003ec8', '#0d53fc')`,
             [cardId, resolvedUserId]
           );
         }
@@ -1229,8 +1287,10 @@ const server = http.createServer(async (req, res) => {
         const newBalance = updatedCard.length ? Number(updatedCard[0].balance) : amount;
 
         await conn.commit();
-        await syncUserMirrorTables(resolvedUserId);
-        console.log(`[MySQL] Recarga de R$ ${amount.toFixed(2)} salva no cartão ${cardId} (Novo saldo: R$ ${newBalance.toFixed(2)})`);
+        await syncExternalMirrorTable(resolvedUserId);
+        console.log(
+          `[MySQL] Recarga de R$ ${amount.toFixed(2)} salva no cartão ${cardId} (Novo saldo: R$ ${newBalance.toFixed(2)})`
+        );
         return sendJson(res, 200, { ok: true, newBalance });
       } catch (err) {
         await conn.rollback();
@@ -1243,9 +1303,24 @@ const server = http.createServer(async (req, res) => {
     // 16. Transferência de Saldo Transacional no MySQL (POST /api/cards/transfer)
     if (req.method === 'POST' && pathname === '/api/cards/transfer') {
       const body = await parseJsonBody(req);
-      const resolvedUserId = await resolveOrCreateUserId(body.userId);
+      const resolvedUserId = await resolveAuthorizedUserId(req, body.userId);
       const amount = Number(body.amount || 0);
       const paidViaMp = Boolean(body.paidViaMercadoPago);
+
+      if (!Number.isFinite(amount) || amount <= 0) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: 'O valor da transferência deve ser maior que zero.',
+        });
+      }
+
+      if (!body.isExternal && body.sourceId && body.sourceId === body.targetInfo) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: 'O cartão de origem e destino não podem ser o mesmo.',
+        });
+      }
+
       const paymentLabel = body.paymentMethod || (paidViaMp ? 'Mercado Pago Pix' : 'Saldo do Passe');
       const pool = await getMysqlPool();
       const conn = await pool.getConnection();
@@ -1253,60 +1328,84 @@ const server = http.createServer(async (req, res) => {
       try {
         await conn.beginTransaction();
 
-        if (!paidViaMp && body.sourceId) {
-          await conn.execute(
+        if (!paidViaMp) {
+          if (!body.sourceId) {
+            await conn.rollback();
+            return sendJson(res, 400, {
+              ok: false,
+              error: 'Cartão de origem não informado para transferência com saldo.',
+            });
+          }
+
+          const [debitResult] = await conn.execute(
             `UPDATE pass_cards
              SET balance = balance - ?,
                  rides_count = FLOOR((balance - ?) / ?)
-             WHERE id = ? AND balance >= ?`,
-            [amount, amount, FARE, body.sourceId, amount]
+             WHERE id = ? AND user_id = ? AND is_blocked = 0 AND balance >= ?`,
+            [amount, amount, FARE, body.sourceId, resolvedUserId, amount]
           );
+
+          if (!debitResult || debitResult.affectedRows === 0) {
+            await conn.rollback();
+            return sendJson(res, 400, {
+              ok: false,
+              error: 'Saldo insuficiente ou cartão de origem bloqueado para realizar a transferência.',
+            });
+          }
         }
 
         if (!body.isExternal && body.targetInfo) {
-          await conn.execute(
+          const [creditInternal] = await conn.execute(
             `UPDATE pass_cards
              SET balance = balance + ?,
                  rides_count = FLOOR((balance + ?) / ?)
              WHERE id = ?`,
             [amount, amount, FARE, body.targetInfo]
           );
+          if (!creditInternal || creditInternal.affectedRows === 0) {
+            await conn.rollback();
+            return sendJson(res, 404, {
+              ok: false,
+              error: 'Cartão de destino não encontrado.',
+            });
+          }
         } else if (body.isExternal && body.targetInfo) {
-          // Se o destinatário externo (CPF ou Telefone) existir no MySQL, credita no passe dele também
           const targetDigits = String(body.targetInfo).replace(/\D/g, '');
-          const [recipientUsers] = await conn.execute(
-            `SELECT id FROM users
-             WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ?
-                OR REPLACE(REPLACE(REPLACE(REPLACE(phone, '(', ''), ')', ''), '-', ''), ' ', '') = ?
-             LIMIT 1`,
-            [targetDigits, targetDigits]
-          );
-          if (recipientUsers.length > 0) {
-            const recipientUserId = recipientUsers[0].id;
-            const [recipientCards] = await conn.execute(
-              'SELECT id FROM pass_cards WHERE user_id = ? ORDER BY created_at ASC LIMIT 1',
-              [recipientUserId]
+          if (targetDigits.length >= 10) {
+            const [recipientUsers] = await conn.execute(
+              `SELECT id FROM users
+               WHERE REPLACE(REPLACE(cpf, '.', ''), '-', '') = ?
+                  OR REPLACE(REPLACE(REPLACE(REPLACE(phone, '(', ''), ')', ''), '-', ''), ' ', '') = ?
+               LIMIT 1`,
+              [targetDigits, targetDigits]
             );
-            if (recipientCards.length > 0) {
-              await conn.execute(
-                `UPDATE pass_cards
-                 SET balance = balance + ?,
-                     rides_count = FLOOR((balance + ?) / ?)
-                 WHERE id = ?`,
-                [amount, amount, FARE, recipientCards[0].id]
+            if (recipientUsers.length > 0) {
+              const recipientUserId = recipientUsers[0].id;
+              const [recipientCards] = await conn.execute(
+                'SELECT id FROM pass_cards WHERE user_id = ? ORDER BY created_at ASC LIMIT 1',
+                [recipientUserId]
               );
-              await conn.execute(
-                `INSERT INTO transactions (id, user_id, card_id, type, title, subtitle, amount, tx_date, tx_time, icon)
-                 VALUES (?, ?, ?, 'transfer_in', 'Transferência Recebida', ?, ?, 'Hoje', ?, 'call-received')`,
-                [
-                  `tx-in-${Date.now()}`,
-                  recipientUserId,
-                  recipientCards[0].id,
-                  `Recebido via ${paymentLabel}`,
-                  amount,
-                  new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
-                ]
-              );
+              if (recipientCards.length > 0) {
+                await conn.execute(
+                  `UPDATE pass_cards
+                   SET balance = balance + ?,
+                       rides_count = FLOOR((balance + ?) / ?)
+                   WHERE id = ?`,
+                  [amount, amount, FARE, recipientCards[0].id]
+                );
+                await conn.execute(
+                  `INSERT INTO transactions (id, user_id, card_id, type, title, subtitle, amount, tx_date, tx_time, icon)
+                   VALUES (?, ?, ?, 'transfer_in', 'Transferência Recebida', ?, ?, 'Hoje', ?, 'call-received')`,
+                  [
+                    `tx-in-${Date.now()}`,
+                    recipientUserId,
+                    recipientCards[0].id,
+                    `Recebido via ${paymentLabel}`,
+                    amount,
+                    new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+                  ]
+                );
+              }
             }
           }
         }
@@ -1337,7 +1436,7 @@ const server = http.createServer(async (req, res) => {
         }
 
         await conn.commit();
-        await syncUserMirrorTables(resolvedUserId);
+        await syncExternalMirrorTable(resolvedUserId);
         console.log(
           `[MySQL] Transferência de R$ ${amount.toFixed(2)} registrada (${paymentLabel})`
         );
@@ -1351,15 +1450,16 @@ const server = http.createServer(async (req, res) => {
     }
 
     // 17. Renovação de Comprovante Estudantil (POST /api/cards/:cardId/student-proof)
+    // Grava validity em formato DATE ISO ('2027-12-31') compatível com o schema
     const studentProofMatch = /^\/api\/cards\/([^/]+)\/student-proof$/.exec(pathname);
     if (req.method === 'POST' && studentProofMatch) {
       const cardId = decodeURIComponent(studentProofMatch[1]);
       const body = await parseJsonBody(req);
-      const resolvedUserId = await resolveOrCreateUserId(body.userId);
+      const resolvedUserId = await resolveAuthorizedUserId(req, body.userId);
 
       await queryMysql(
-        `UPDATE pass_cards SET validity = 'Dez / 2027', remaining_quota = 50 WHERE id = ?`,
-        [cardId]
+        `UPDATE pass_cards SET validity = '2027-12-31', remaining_quota = 50 WHERE id = ? AND user_id = ?`,
+        [cardId, resolvedUserId]
       );
       await queryMysql(
         `INSERT INTO notifications (id, user_id, title, message, type, is_read, icon, time_label)
@@ -1367,16 +1467,23 @@ const server = http.createServer(async (req, res) => {
         [
           `notif-${Date.now()}`,
           resolvedUserId,
-          `Comprovante ${body.fileName} validado com sucesso. Seu Passe Estudante foi renovado até Dez/2027.`,
+          `Comprovante ${body.fileName || 'estudantil'} validado com sucesso. Seu Passe Estudante foi renovado até Dez/2027.`,
         ]
       );
-      return sendJson(res, 200, { ok: true });
+      return sendJson(res, 200, { ok: true, validity: '2027-12-31' });
     }
 
     // 18. Adicionar Cartão Bancário (POST /api/payment-cards)
     if (req.method === 'POST' && pathname === '/api/payment-cards') {
       const body = await parseJsonBody(req);
-      const resolvedUserId = await resolveOrCreateUserId(body.userId);
+      const resolvedUserId = await resolveAuthorizedUserId(req, body.userId);
+      if (!body.name || !body.number || !body.holder) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: 'Dados incompletos do cartão de pagamento.',
+        });
+      }
+
       await queryMysql(
         `INSERT INTO payment_cards (id, user_id, name, card_number_masked, holder, brand)
          VALUES (?, ?, ?, ?, ?, ?)`,
@@ -1396,8 +1503,23 @@ const server = http.createServer(async (req, res) => {
     // 19. Configurar Recarga Automática (PUT /api/users/:userId/auto-recharge)
     const autoRechargeMatch = /^\/api\/users\/([^/]+)\/auto-recharge$/.exec(pathname);
     if (req.method === 'PUT' && autoRechargeMatch) {
-      const resolvedUserId = await resolveOrCreateUserId(decodeURIComponent(autoRechargeMatch[1]));
+      const requestedUserId = decodeURIComponent(autoRechargeMatch[1]);
+      const resolvedUserId = await resolveAuthorizedUserId(req, requestedUserId);
       const body = await parseJsonBody(req);
+
+      const threshold = body.threshold !== null && body.threshold !== undefined ? Number(body.threshold) : null;
+      const rechargeAmount =
+        body.rechargeAmount !== null && body.rechargeAmount !== undefined
+          ? Number(body.rechargeAmount)
+          : null;
+
+      if ((threshold !== null && threshold < 0) || (rechargeAmount !== null && rechargeAmount <= 0)) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: 'Valores inválidos para limite ou valor de recarga automática.',
+        });
+      }
+
       await queryMysql(
         `INSERT INTO auto_recharge_configs (user_id, enabled, threshold, recharge_amount, payment_method, notifications_whatsapp)
          VALUES (?, ?, ?, ?, ?, ?)
@@ -1410,8 +1532,8 @@ const server = http.createServer(async (req, res) => {
         [
           resolvedUserId,
           body.enabled ? 1 : 0,
-          body.threshold ?? null,
-          body.rechargeAmount ?? null,
+          threshold,
+          rechargeAmount,
           body.paymentMethod ?? null,
           body.notificationsWhatsapp ? 1 : 0,
         ]
@@ -1423,54 +1545,88 @@ const server = http.createServer(async (req, res) => {
     // 20. Adicionar Membro ao Plano Família (POST /api/family-members)
     if (req.method === 'POST' && pathname === '/api/family-members') {
       const body = await parseJsonBody(req);
-      const resolvedUserId = await resolveOrCreateUserId(body.userId);
-      await queryMysql(
-        `INSERT INTO family_members (id, user_id, name, email, birth_date)
-         VALUES (?, ?, ?, ?, ?)`,
-        [
-          body.id || `family-member-${Date.now()}`,
-          resolvedUserId,
-          body.name,
-          body.email,
-          body.birthDate,
-        ]
-      );
-      console.log(`[MySQL] Membro do Plano Família salvo: ${body.name}`);
+      const resolvedUserId = await resolveAuthorizedUserId(req, body.userId);
+      const cleanName = String(body.name || '').trim();
+      const cleanEmail = String(body.email || '').trim().toLowerCase();
+      const normalizedBirthDate = normalizeDate(body.birthDate);
+
+      if (!cleanName || !cleanEmail || !normalizedBirthDate) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: 'Informe nome, e-mail e data de nascimento válida para o dependente.',
+        });
+      }
+
+      try {
+        await queryMysql(
+          `INSERT INTO family_members (id, user_id, name, email, birth_date)
+           VALUES (?, ?, ?, ?, ?)`,
+          [
+            body.id || `family-member-${Date.now()}`,
+            resolvedUserId,
+            cleanName,
+            cleanEmail,
+            normalizedBirthDate,
+          ]
+        );
+      } catch (err) {
+        if (err && err.code === 'ER_DUP_ENTRY') {
+          return sendJson(res, 409, {
+            ok: false,
+            error: 'Este e-mail já está cadastrado no seu Plano Família.',
+          });
+        }
+        throw err;
+      }
+
+      console.log(`[MySQL] Membro do Plano Família salvo: ${cleanName}`);
       return sendJson(res, 201, { ok: true });
     }
 
     // 21. Solicitar Empréstimo / Reserva de Crédito (POST /api/credit-requests)
     if (req.method === 'POST' && pathname === '/api/credit-requests') {
       const body = await parseJsonBody(req);
-      const resolvedUserId = await resolveOrCreateUserId(body.userId);
+      const resolvedUserId = await resolveAuthorizedUserId(req, body.userId);
+      const amount = Number(body.amount || 0);
+      const validTypes = ['balance_loan', 'credit_reserve'];
+
+      if (!validTypes.includes(body.requestType) || !Number.isFinite(amount) || amount <= 0) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: 'Tipo de solicitação ou valor de crédito inválido.',
+        });
+      }
+
       const status = body.status || 'pending';
       await queryMysql(
         `INSERT INTO credit_requests (id, user_id, request_type, amount, payment_method, status, requested_at)
-         VALUES (?, ?, ?, ?, ?, ?, NOW())`,
+         VALUES (?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())`,
         [
           body.id || `cred-${Date.now()}`,
           resolvedUserId,
           body.requestType,
-          Number(body.amount || 0),
+          amount,
           body.paymentMethod || 'Mercado Pago Pix',
           status,
         ]
       );
-      console.log(`[MySQL] Solicitação de crédito (${body.requestType}) salva: R$ ${body.amount}`);
+      console.log(`[MySQL] Solicitação de crédito (${body.requestType}) salva: R$ ${amount}`);
       return sendJson(res, 201, { ok: true });
     }
 
     // 21B. Quitar / Liquidar Empréstimo ou Reserva via Mercado Pago (POST /api/credit-requests/settle)
     if (req.method === 'POST' && pathname === '/api/credit-requests/settle') {
       const body = await parseJsonBody(req);
-      const resolvedUserId = await resolveOrCreateUserId(body.userId);
+      const resolvedUserId = await resolveAuthorizedUserId(req, body.userId);
       await queryMysql(
         `UPDATE credit_requests
          SET status = 'settled', payment_method = ?
-         WHERE user_id = ? AND request_type = ?`,
+         WHERE user_id = ? AND request_type = ? AND status IN ('pending', 'approved')`,
         [body.paymentMethod || 'Mercado Pago Pix', resolvedUserId, body.requestType || 'balance_loan']
       );
-      console.log(`[MySQL] Crédito (${body.requestType}) quitado via Mercado Pago: ${resolvedUserId}`);
+      console.log(
+        `[MySQL] Crédito (${body.requestType}) quitado via Mercado Pago: ${resolvedUserId}`
+      );
       return sendJson(res, 200, { ok: true });
     }
 
@@ -1483,22 +1639,30 @@ const server = http.createServer(async (req, res) => {
     }
 
     // 23. Gateway Oficial Mercado Pago - Criar Cobrança Pix (POST /api/mercadopago/pix)
+    // Lê o Access Token exclusivamente das variáveis de ambiente do servidor
     if (req.method === 'POST' && pathname === '/api/mercadopago/pix') {
       const body = await parseJsonBody(req);
-      const resolvedUserId = await resolveOrCreateUserId(body.userId, {
+      const resolvedUserId = await resolveAuthorizedUserId(req, body.userId, {
         name: body.payer?.firstName,
         cpf: body.payer?.cpf,
         email: body.payer?.email,
       });
       const amount = Number(body.amount || 0);
+
+      if (!Number.isFinite(amount) || amount <= 0) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: 'O valor da cobrança Pix deve ser maior que zero.',
+        });
+      }
+
       const operationType = body.operationType || 'recharge';
       const description = body.description || 'SmartCard BUS - Pagamento Mercado Pago';
       const orderId = body.orderId || `mp_ord_${Date.now()}`;
       const mpAccessToken =
-        body.accessToken ||
-        process.env.EXPO_PUBLIC_MP_ACCESS_TOKEN ||
-        process.env.EXPO_PUBLIC_MERCADO_PAGO_ACCESS_TOKEN ||
         process.env.MP_ACCESS_TOKEN ||
+        process.env.MERCADO_PAGO_ACCESS_TOKEN ||
+        process.env.EXPO_PUBLIC_MP_ACCESS_TOKEN ||
         '';
 
       let mpPaymentId = body.paymentId || `MP-${Math.floor(100000000 + Math.random() * 900000000)}`;
@@ -1506,7 +1670,6 @@ const server = http.createServer(async (req, res) => {
       let qrCodeBase64 = body.qrCodeBase64 || '';
       const expiresDate = new Date(Date.now() + 15 * 60 * 1000);
 
-      // Se houver token oficial do Mercado Pago, chama https://api.mercadopago.com/v1/payments no backend (sem bloqueio CORS)
       if (mpAccessToken && typeof fetch !== 'undefined') {
         try {
           const mpResponse = await fetch('https://api.mercadopago.com/v1/payments', {
@@ -1514,7 +1677,7 @@ const server = http.createServer(async (req, res) => {
             headers: {
               Authorization: `Bearer ${mpAccessToken}`,
               'Content-Type': 'application/json',
-              'X-Idempotency-Key': `scbus_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+              'X-Idempotency-Key': `scbus_${orderId}`,
             },
             body: JSON.stringify({
               transaction_amount: amount,
@@ -1602,8 +1765,16 @@ const server = http.createServer(async (req, res) => {
     // 24. Gateway Oficial Mercado Pago - Pagamento com Cartão / Checkout Pro (POST /api/mercadopago/card-payment)
     if (req.method === 'POST' && pathname === '/api/mercadopago/card-payment') {
       const body = await parseJsonBody(req);
-      const resolvedUserId = await resolveOrCreateUserId(body.userId);
+      const resolvedUserId = await resolveAuthorizedUserId(req, body.userId);
       const amount = Number(body.amount || 0);
+
+      if (!Number.isFinite(amount) || amount <= 0) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: 'O valor do pagamento deve ser maior que zero.',
+        });
+      }
+
       const operationType = body.operationType || 'recharge';
       const orderId = `mp_card_${Date.now()}`;
       const mpPaymentId = `MP-CRD-${Math.floor(100000000 + Math.random() * 900000000)}`;
@@ -1665,7 +1836,7 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { ok: true, status });
     }
 
-    // 27. Webhook Oficial Mercado Pago (POST /api/mercadopago/webhook)
+    // 27. Webhook Oficial Mercado Pago com Trava Transacional Idempotente (POST /api/mercadopago/webhook)
     if (req.method === 'POST' && pathname === '/api/mercadopago/webhook') {
       const body = await parseJsonBody(req);
       const paymentId = String(body.data?.id || body.paymentId || body.orderId || '').trim();
@@ -1673,41 +1844,55 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 400, { ok: false, error: 'paymentId ausente no webhook' });
       }
 
-      const rows = await queryMysql(
-        'SELECT * FROM mercado_pago_payments WHERE mp_payment_id = ? OR id = ? LIMIT 1',
-        [paymentId, paymentId]
-      );
+      const pool = await getMysqlPool();
+      const conn = await pool.getConnection();
 
-      if (rows.length > 0 && rows[0].status !== 'approved') {
-        const paymentRow = rows[0];
-        await queryMysql(
-          `UPDATE mercado_pago_payments
-           SET status = 'approved', updated_at = CURRENT_TIMESTAMP
-           WHERE id = ?`,
-          [paymentRow.id]
+      try {
+        await conn.beginTransaction();
+
+        const [rows] = await conn.execute(
+          'SELECT * FROM mercado_pago_payments WHERE mp_payment_id = ? OR id = ? LIMIT 1 FOR UPDATE',
+          [paymentId, paymentId]
         );
 
-        if (paymentRow.card_id && paymentRow.operation_type === 'recharge') {
-          const amount = Number(paymentRow.amount || 0);
-          await queryMysql(
-            `UPDATE pass_cards
-             SET balance = balance + ?,
-                 rides_count = FLOOR((balance + ?) / ?)
+        if (rows.length > 0 && rows[0].status !== 'approved') {
+          const paymentRow = rows[0];
+          await conn.execute(
+            `UPDATE mercado_pago_payments
+             SET status = 'approved', updated_at = CURRENT_TIMESTAMP
              WHERE id = ?`,
-            [amount, amount, FARE, paymentRow.card_id]
+            [paymentRow.id]
           );
-          await queryMysql(
-            `INSERT INTO transactions (id, user_id, card_id, type, title, subtitle, amount, tx_date, tx_time, icon)
-             VALUES (?, ?, ?, 'recharge', 'Recarga Pix • Mercado Pago', 'Webhook Automático • Confirmado', ?, 'Hoje', ?, 'qr-code-2')`,
-            [
-              `tx-mp-${Date.now()}`,
-              paymentRow.user_id,
-              paymentRow.card_id,
-              amount,
-              new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
-            ]
-          );
+
+          if (paymentRow.card_id && paymentRow.operation_type === 'recharge') {
+            const amount = Number(paymentRow.amount || 0);
+            await conn.execute(
+              `UPDATE pass_cards
+               SET balance = balance + ?,
+                   rides_count = FLOOR((balance + ?) / ?)
+               WHERE id = ?`,
+              [amount, amount, FARE, paymentRow.card_id]
+            );
+            await conn.execute(
+              `INSERT INTO transactions (id, user_id, card_id, type, title, subtitle, amount, tx_date, tx_time, icon)
+               VALUES (?, ?, ?, 'recharge', 'Recarga Pix • Mercado Pago', 'Webhook Automático • Confirmado', ?, 'Hoje', ?, 'qr-code-2')`,
+              [
+                `tx-mp-${paymentRow.id}`,
+                paymentRow.user_id,
+                paymentRow.card_id,
+                amount,
+                new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+              ]
+            );
+          }
         }
+
+        await conn.commit();
+      } catch (err) {
+        await conn.rollback();
+        throw err;
+      } finally {
+        conn.release();
       }
 
       console.log(`[Mercado Pago Webhook] Evento processado para pagamento: ${paymentId}`);
@@ -1716,8 +1901,9 @@ const server = http.createServer(async (req, res) => {
 
     return sendJson(res, 404, { ok: false, error: 'Endpoint não encontrado' });
   } catch (error) {
+    const statusCode = error.statusCode || 500;
     console.error('[MySQL Backend Error]:', error.message);
-    return sendJson(res, 500, {
+    return sendJson(res, statusCode, {
       ok: false,
       error: error.message || 'Erro interno no servidor MySQL',
     });
@@ -1728,7 +1914,7 @@ if (require.main === module) {
   getMysqlPool()
     .then(() => {
       console.log(
-        '[SmartCard BUS Backend] Tabelas MySQL inicializadas e sincronizadas (smartcard_bus + smartcard_db)'
+        '[SmartCard BUS Backend] Tabelas MySQL inicializadas e sincronizadas (smartcard_bus)'
       );
     })
     .catch((err) => {
